@@ -1,0 +1,48 @@
+# Render.com deployment configuration
+# https://render.com/docs/blueprint-spec
+
+services:
+  - type: web
+    name: ai-study-assistant
+    runtime: docker
+    dockerfilePath: ./Dockerfile
+    dockerContext: .
+    plan: free
+    region: oregon  # or your preferred region
+    
+    # Health check
+    healthCheckPath: /health
+    
+    # Environment variables (set in Render dashboard)
+    envVars:
+      - key: QDRANT_URL
+        sync: false
+      - key: QDRANT_API_KEY
+        sync: false
+      - key: COHERE_API_KEY
+        sync: false
+      - key: GEMINI_API_KEY
+        sync: false
+      - key: API_SERVER_URL
+        value: https://api.mergeedu.app
+      - key: COLLECTION_NAME
+        value: study_materials
+      - key: CHUNK_SIZE
+        value: "512"
+      - key: CHUNK_OVERLAP
+        value: "100"
+      - key: TOP_K_RESULTS
+        value: "5"
+      - key: MIN_RELEVANCE_SCORE
+        value: "0.3"
+      - key: MAX_FILE_SIZE_MB
+        value: "10"
+      - key: PORT
+        value: "8001"
+      - key: LOG_LEVEL
+        value: INFO
+      - key: ENVIRONMENT
+        value: production
+    
+    # Auto-deploy on git push
+    autoDeploy: true
