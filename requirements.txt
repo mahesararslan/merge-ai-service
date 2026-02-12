@@ -1,0 +1,33 @@
+# FastAPI and server
+fastapi==0.109.2
+uvicorn[standard]==0.27.1
+python-multipart==0.0.9
+
+# Pydantic for validation
+pydantic>=2.10.0
+pydantic-settings>=2.7.0
+
+# HTTP client
+httpx==0.26.0
+
+# Vector database
+qdrant-client==1.7.3
+
+# Document processing
+PyMuPDF>=1.27.1
+python-docx==1.1.0
+python-pptx==0.6.23
+chardet==5.2.0
+
+# Text processing
+langchain-text-splitters==0.0.1
+
+# AI APIs
+cohere==4.47
+google-generativeai==0.4.0
+
+# Utilities
+python-dotenv==1.0.1
+
+# SSE support
+sse-starlette==2.0.0
