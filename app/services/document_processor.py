@@ -12,6 +12,7 @@ import fitz  # PyMuPDF
 from docx import Document as DocxDocument
 from pptx import Presentation
 import chardet
+import httpx
 
 from app.models import DocumentType
 
@@ -31,6 +32,39 @@ class DocumentProcessor:
             DocumentType.PPTX: self._extract_pptx,
             DocumentType.TXT: self._extract_txt,
         }
+    
+    async def download_from_s3(self, s3_url: str) -> Tuple[bytes, Optional[str]]:
+        """
+        Download file content from S3 URL.
+        
+        Args:
+            s3_url: The S3 URL to download from
+            
+        Returns:
+            Tuple of (file_content, error_message)
+        """
+        try:
+            async with httpx.AsyncClient(timeout=60.0) as client:
+                logger.info(f"Downloading file from S3: {s3_url}")
+                response = await client.get(s3_url)
+                
+                if response.status_code != 200:
+                    error_msg = f"Failed to download from S3: HTTP {response.status_code}"
+                    logger.error(error_msg)
+                    return b"", error_msg
+                
+                content = response.content
+                logger.info(f"Downloaded {len(content)} bytes from S3")
+                return content, None
+                
+        except httpx.TimeoutException:
+            error_msg = "Timeout while downloading from S3"
+            logger.error(error_msg)
+            return b"", error_msg
+        except Exception as e:
+            error_msg = f"Error downloading from S3: {str(e)}"
+            logger.error(error_msg)
+            return b"", error_msg
     
     async def extract_text(
         self, 

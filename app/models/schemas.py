@@ -27,6 +27,14 @@ class DifficultyLevel(str, Enum):
     ADVANCED = "advanced"
 
 
+class ProcessingStatus(str, Enum):
+    """File processing status."""
+    PENDING = "pending"
+    PROCESSING = "processing"
+    COMPLETED = "completed"
+    FAILED = "failed"
+
+
 # =============================================================================
 # Ingestion Models
 # =============================================================================
@@ -36,6 +44,15 @@ class IngestRequest(BaseModel):
     room_id: str = Field(..., description="ID of the study room")
     file_id: str = Field(..., description="Unique identifier for the file")
     document_type: DocumentType = Field(..., description="Type of document")
+
+
+class S3IngestRequest(BaseModel):
+    """Request model for document ingestion from S3."""
+    s3_url: str = Field(..., description="S3 URL of the file to process")
+    room_id: str = Field(..., description="ID of the study room")
+    file_id: str = Field(..., description="Unique identifier for the file")
+    document_type: DocumentType = Field(..., description="Type of document")
+    metadata: Optional[Dict[str, Any]] = Field(None, description="Additional metadata")
 
 
 class ChunkMetadata(BaseModel):
@@ -58,6 +75,15 @@ class IngestResponse(BaseModel):
     chunks_created: int
     processing_time_ms: float
     message: str
+
+
+class ProcessingStatusResponse(BaseModel):
+    """Response model for processing status check."""
+    file_id: str
+    status: ProcessingStatus
+    chunks_created: Optional[int] = None
+    error: Optional[str] = None
+    processed_at: Optional[datetime] = None
 
 
 # =============================================================================

@@ -4,9 +4,12 @@ from app.models.schemas import (
     # Enums
     DocumentType,
     DifficultyLevel,
+    ProcessingStatus,
     # Ingestion
     IngestRequest,
+    S3IngestRequest,
     IngestResponse,
+    ProcessingStatusResponse,
     ChunkMetadata,
     # Query
     QueryRequest,
@@ -31,8 +34,11 @@ from app.models.schemas import (
 __all__ = [
     "DocumentType",
     "DifficultyLevel",
+    "ProcessingStatus",
     "IngestRequest",
+    "S3IngestRequest",
     "IngestResponse",
+    "ProcessingStatusResponse",
     "ChunkMetadata",
     "QueryRequest",
     "QueryResponse",

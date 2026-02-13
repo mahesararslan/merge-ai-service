@@ -4,12 +4,19 @@ Document ingestion endpoint for processing and storing course materials.
 
 import logging
 import time
-from typing import Optional
+from typing import Optional, Dict
 
-from fastapi import APIRouter, UploadFile, File, Form, HTTPException, status
+from fastapi import APIRouter, UploadFile, File, Form, HTTPException, status, BackgroundTasks
 
 from app.config import get_settings
-from app.models import DocumentType, IngestResponse, ErrorResponse
+from app.models import (
+    DocumentType, 
+    IngestResponse, 
+    ErrorResponse, 
+    S3IngestRequest,
+    ProcessingStatus,
+    ProcessingStatusResponse
+)
 from app.services import (
     document_processor,
     chunking_service,
@@ -20,6 +27,9 @@ from app.services import (
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/ingest", tags=["Ingestion"])
+
+# In-memory storage for processing status (use Redis in production)
+processing_status_store: Dict[str, dict] = {}
 
 
 @router.post(
@@ -162,6 +172,217 @@ async def ingest_document(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Document processing failed: {str(e)}"
         )
+
+
+async def process_s3_document(
+    s3_url: str,
+    file_id: str,
+    room_id: str,
+    document_type: DocumentType
+):
+    """
+    Background task to process document from S3.
+    
+    This runs asynchronously to avoid blocking the API response.
+    """
+    try:
+        # Update status to processing
+        processing_status_store[file_id] = {
+            "status": ProcessingStatus.PROCESSING,
+            "chunks_created": None,
+            "error": None,
+            "processed_at": None
+        }
+        
+        settings = get_settings()
+        start_time = time.time()
+        
+        logger.info(f"Starting S3 document processing: file_id={file_id}, s3_url={s3_url}")
+        
+        # Step 1: Download from S3
+        content, download_error = await document_processor.download_from_s3(s3_url)
+        if download_error:
+            raise Exception(f"S3 download failed: {download_error}")
+        
+        # Validate file size
+        if len(content) > settings.max_file_size_bytes:
+            raise Exception(f"File exceeds maximum size of {settings.max_file_size_mb}MB")
+        
+        if len(content) == 0:
+            raise Exception("Downloaded file is empty")
+        
+        # Step 2: Extract text
+        text, extract_error = await document_processor.extract_text(content, document_type)
+        if extract_error:
+            raise Exception(f"Text extraction failed: {extract_error}")
+        
+        if not text.strip():
+            raise Exception("No text content could be extracted from the document")
+        
+        logger.info(f"Extracted {len(text)} characters from S3 document")
+        
+        # Step 3: Chunk text
+        chunks = chunking_service.chunk_text(text)
+        if not chunks:
+            raise Exception("Document produced no valid text chunks")
+        
+        logger.info(f"Created {len(chunks)} chunks")
+        
+        # Step 4: Generate embeddings
+        chunk_texts = [chunk.content for chunk in chunks]
+        embeddings = await embedding_service.embed_documents(chunk_texts)
+        
+        logger.info(f"Generated {len(embeddings)} embeddings")
+        
+        # Step 5: Delete existing vectors for this file (idempotent update)
+        await vector_store_service.delete_file(file_id)
+        
+        # Step 6: Store vectors
+        chunks_stored = await vector_store_service.store_chunks(
+            chunks=chunks,
+            embeddings=embeddings,
+            room_id=room_id,
+            file_id=file_id,
+            document_type=document_type.value
+        )
+        
+        processing_time = (time.time() - start_time) * 1000
+        
+        # Update status to completed
+        from datetime import datetime
+        processing_status_store[file_id] = {
+            "status": ProcessingStatus.COMPLETED,
+            "chunks_created": chunks_stored,
+            "error": None,
+            "processed_at": datetime.utcnow()
+        }
+        
+        logger.info(
+            f"S3 ingestion complete: file_id={file_id}, "
+            f"chunks={chunks_stored}, time={processing_time:.0f}ms"
+        )
+        
+    except Exception as e:
+        logger.error(f"S3 ingestion failed for file_id={file_id}: {str(e)}", exc_info=True)
+        from datetime import datetime
+        processing_status_store[file_id] = {
+            "status": ProcessingStatus.FAILED,
+            "chunks_created": None,
+            "error": str(e),
+            "processed_at": datetime.utcnow()
+        }
+
+
+@router.post(
+    "/ingest-from-s3",
+    response_model=IngestResponse,
+    status_code=status.HTTP_202_ACCEPTED,
+    responses={
+        202: {"description": "Processing started"},
+        424: {"model": ErrorResponse, "description": "S3 download failed"},
+        422: {"model": ErrorResponse, "description": "File processing failed"}
+    }
+)
+async def ingest_from_s3(
+    request: S3IngestRequest,
+    background_tasks: BackgroundTasks
+):
+    """
+    Ingest a document from S3 URL for RAG.
+    
+    This endpoint accepts an S3 URL and processes the file asynchronously.
+    The frontend should:
+    1. Upload file directly to S3 using presigned URL
+    2. Call this endpoint with the S3 URL
+    3. Poll /ingest-status/{file_id} to check processing status
+    
+    Process:
+    1. Download file from S3
+    2. Extract text from document
+    3. Chunk text into semantic segments
+    4. Generate embeddings via Cohere API
+    5. Store vectors in Qdrant with metadata
+    
+    Returns:
+        202 Accepted with processing status
+    """
+    try:
+        # Validate document type
+        doc_type = request.document_type
+        
+        # Initialize processing status
+        processing_status_store[request.file_id] = {
+            "status": ProcessingStatus.PENDING,
+            "chunks_created": None,
+            "error": None,
+            "processed_at": None
+        }
+        
+        # Add background task to process the document
+        background_tasks.add_task(
+            process_s3_document,
+            request.s3_url,
+            request.file_id,
+            request.room_id,
+            doc_type
+        )
+        
+        logger.info(
+            f"S3 ingestion queued: file_id={request.file_id}, "
+            f"room_id={request.room_id}, s3_url={request.s3_url}"
+        )
+        
+        return IngestResponse(
+            success=True,
+            file_id=request.file_id,
+            room_id=request.room_id,
+            chunks_created=0,  # Will be updated when processing completes
+            processing_time_ms=0,
+            message="Document processing started. Check status at /ingest-status/{file_id}"
+        )
+        
+    except Exception as e:
+        logger.error(f"S3 ingestion request failed: {str(e)}", exc_info=True)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to queue document processing: {str(e)}"
+        )
+
+
+@router.get(
+    "/ingest-status/{file_id}",
+    response_model=ProcessingStatusResponse,
+    responses={
+        404: {"model": ErrorResponse, "description": "File not found"}
+    }
+)
+async def get_processing_status(file_id: str):
+    """
+    Get the processing status of a document.
+    
+    Use this endpoint to check if embedding generation is complete.
+    
+    Args:
+        file_id: The file ID to check
+        
+    Returns:
+        ProcessingStatusResponse with current status
+    """
+    if file_id not in processing_status_store:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"No processing status found for file_id: {file_id}"
+        )
+    
+    status_data = processing_status_store[file_id]
+    
+    return ProcessingStatusResponse(
+        file_id=file_id,
+        status=status_data["status"],
+        chunks_created=status_data["chunks_created"],
+        error=status_data["error"],
+        processed_at=status_data["processed_at"]
+    )
 
 
 @router.delete("/{file_id}")
