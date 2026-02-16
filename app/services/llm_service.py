@@ -133,8 +133,12 @@ class LLMService:
         
         context_text = "\n---\n".join(context_parts)
         
-        # Build prompt
-        prompt = f"""CONTEXT FROM COURSE MATERIALS:
+        # Build prompt with system instruction included
+        prompt = f"""{RAG_SYSTEM_PROMPT}
+
+===
+
+CONTEXT FROM COURSE MATERIALS:
 {context_text}
 
 STUDENT QUESTION:
@@ -146,8 +150,7 @@ Please provide a helpful answer based on the context above."""
             model = genai.GenerativeModel(
                 model_name=self.model_name,
                 generation_config=self.generation_config,
-                safety_settings=self.safety_settings,
-                system_instruction=RAG_SYSTEM_PROMPT
+                safety_settings=self.safety_settings
             )
             
             response = model.generate_content(prompt)
@@ -180,7 +183,12 @@ Please provide a helpful answer based on the context above."""
         
         context_text = "\n---\n".join(context_parts)
         
-        prompt = f"""CONTEXT FROM COURSE MATERIALS:
+        # Build prompt with system instruction included
+        prompt = f"""{RAG_SYSTEM_PROMPT}
+
+===
+
+CONTEXT FROM COURSE MATERIALS:
 {context_text}
 
 STUDENT QUESTION:
@@ -192,8 +200,7 @@ Please provide a helpful answer based on the context above."""
             model = genai.GenerativeModel(
                 model_name=self.model_name,
                 generation_config=self.generation_config,
-                safety_settings=self.safety_settings,
-                system_instruction=RAG_SYSTEM_PROMPT
+                safety_settings=self.safety_settings
             )
             
             response = model.generate_content(prompt, stream=True)
@@ -277,7 +284,12 @@ User Preferences:
 - Study days per week: {preferences.get('days_per_week', 5)}
 """
         
-        prompt = f"""Create a personalized study plan with these details:
+        # Build the prompt with system instruction included
+        prompt = f"""{STUDY_PLAN_SYSTEM_PROMPT}
+
+===
+
+Create a personalized study plan with these details:
 
 USER ID: {user_id}
 GOAL: {goal}
@@ -302,7 +314,6 @@ Return the study plan as a valid JSON object following the specified format."""
                     max_output_tokens=4096,
                 ),
                 safety_settings=self.safety_settings,
-                system_instruction=STUDY_PLAN_SYSTEM_PROMPT,
                 tools=[tools]
             )
             
