@@ -90,6 +90,12 @@ class ProcessingStatusResponse(BaseModel):
 # Query Models
 # =============================================================================
 
+class ConversationMessage(BaseModel):
+    """A message in the conversation history."""
+    role: str = Field(..., description="Message role: 'user' or 'assistant'")
+    content: str = Field(..., description="Message content")
+
+
 class QueryRequest(BaseModel):
     """Request model for RAG query."""
     query: str = Field(..., min_length=1, max_length=2000, description="User's question")
@@ -97,6 +103,14 @@ class QueryRequest(BaseModel):
     room_ids: List[str] = Field(..., min_length=1, description="List of room IDs to search")
     context_file_id: Optional[str] = Field(None, description="Optional specific file to focus on")
     top_k: Optional[int] = Field(None, ge=1, le=20, description="Number of chunks to retrieve")
+    conversation_history: Optional[List[ConversationMessage]] = Field(
+        None, 
+        description="Recent conversation history (last 8 messages)"
+    )
+    conversation_summary: Optional[str] = Field(
+        None, 
+        description="Summary of older conversation messages"
+    )
 
 
 class SourceChunk(BaseModel):

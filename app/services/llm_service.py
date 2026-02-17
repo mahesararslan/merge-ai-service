@@ -113,14 +113,18 @@ class LLMService:
     async def generate_answer(
         self,
         query: str,
-        context_chunks: List[Dict[str, Any]]
+        context_chunks: List[Dict[str, Any]],
+        conversation_history: Optional[List[Dict[str, str]]] = None,
+        conversation_summary: Optional[str] = None
     ) -> str:
         """
-        Generate an answer using RAG with retrieved context.
+        Generate an answer using RAG with retrieved context and conversation history.
         
         Args:
             query: User's question
             context_chunks: Retrieved relevant chunks
+            conversation_history: Recent conversation messages (last 8)
+            conversation_summary: Summary of older messages
             
         Returns:
             Generated answer with citations
@@ -133,10 +137,25 @@ class LLMService:
         
         context_text = "\n---\n".join(context_parts)
         
-        # Build prompt with system instruction included
-        prompt = f"""{RAG_SYSTEM_PROMPT}
-
-===
+        # Build conversation context
+        conversation_context = ""
+        if conversation_summary:
+            conversation_context += f"\n\nPREVIOUS CONVERSATION SUMMARY:\n{conversation_summary}\n"
+        
+        if conversation_history:
+            conversation_context += "\n\nRECENT CONVERSATION HISTORY:\n"
+            for msg in conversation_history:
+                role = "Student" if msg['role'] == 'user' else "Assistant"
+                conversation_context += f"{role}: {msg['content']}\n"
+        
+        # Build prompt with system instruction, conversation context, and course materials
+        prompt = f"{RAG_SYSTEM_PROMPT}\n\n==="
+        
+        # Add conversation context if available
+        if conversation_context:
+            prompt += f"{conversation_context}\n\n==="
+        
+        prompt += f"""
 
 CONTEXT FROM COURSE MATERIALS:
 {context_text}
@@ -144,7 +163,7 @@ CONTEXT FROM COURSE MATERIALS:
 STUDENT QUESTION:
 {query}
 
-Please provide a helpful answer based on the context above."""
+Please provide a helpful answer based on the context above{' and the conversation history' if conversation_context else ''}."""
 
         try:
             model = genai.GenerativeModel(
@@ -168,7 +187,9 @@ Please provide a helpful answer based on the context above."""
     async def generate_answer_stream(
         self,
         query: str,
-        context_chunks: List[Dict[str, Any]]
+        context_chunks: List[Dict[str, Any]],
+        conversation_history: Optional[List[Dict[str, str]]] = None,
+        conversation_summary: Optional[str] = None
     ) -> AsyncGenerator[str, None]:
         """
         Generate answer with streaming for SSE support.
@@ -183,10 +204,25 @@ Please provide a helpful answer based on the context above."""
         
         context_text = "\n---\n".join(context_parts)
         
-        # Build prompt with system instruction included
-        prompt = f"""{RAG_SYSTEM_PROMPT}
-
-===
+        # Build conversation context
+        conversation_context = ""
+        if conversation_summary:
+            conversation_context += f"\n\nPREVIOUS CONVERSATION SUMMARY:\n{conversation_summary}\n"
+        
+        if conversation_history:
+            conversation_context += "\n\nRECENT CONVERSATION HISTORY:\n"
+            for msg in conversation_history:
+                role = "Student" if msg['role'] == 'user' else "Assistant"
+                conversation_context += f"{role}: {msg['content']}\n"
+        
+        # Build prompt with system instruction, conversation context, and course materials
+        prompt = f"{RAG_SYSTEM_PROMPT}\n\n==="
+        
+        # Add conversation context if available
+        if conversation_context:
+            prompt += f"{conversation_context}\n\n==="
+        
+        prompt += f"""
 
 CONTEXT FROM COURSE MATERIALS:
 {context_text}
@@ -194,7 +230,7 @@ CONTEXT FROM COURSE MATERIALS:
 STUDENT QUESTION:
 {query}
 
-Please provide a helpful answer based on the context above."""
+Please provide a helpful answer based on the context above{' and the conversation history' if conversation_context else ''}."""
 
         try:
             model = genai.GenerativeModel(
@@ -429,6 +465,41 @@ Return the study plan as a valid JSON object following the specified format."""
                 "calendar_conflicts": [],
                 "adjustment_tips": ["Please try generating the plan again"]
             }
+    
+    async def generate_summary(self, prompt: str) -> str:
+        """
+        Generate a concise summary using Gemini.
+        
+        Used for conversation summarization to compress old messages
+        and save tokens in the LLM context window.
+        
+        Args:
+            prompt: The summarization prompt
+            
+        Returns:
+            Generated summary text
+        """
+        try:
+            model = genai.GenerativeModel(
+                model_name=self.model_name,
+                generation_config=genai.GenerationConfig(
+                    temperature=0.3,  # Lower temperature for more focused summaries
+                    max_output_tokens=512,  # Summaries should be concise
+                ),
+                safety_settings=self.safety_settings
+            )
+            
+            response = model.generate_content(prompt)
+            
+            if response.text:
+                return response.text.strip()
+            else:
+                logger.warning("Empty response from Gemini during summarization")
+                return "Unable to generate summary."
+                
+        except Exception as e:
+            logger.error(f"Summary generation failed: {str(e)}")
+            raise
     
     async def health_check(self) -> bool:
         """Check if Gemini API is accessible."""

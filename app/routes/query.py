@@ -58,7 +58,9 @@ async def query(request: QueryRequest):
             user_id=request.user_id,
             room_ids=request.room_ids,
             context_file_id=request.context_file_id,
-            top_k=request.top_k
+            top_k=request.top_k,
+            conversation_history=[msg.dict() for msg in request.conversation_history] if request.conversation_history else None,
+            conversation_summary=request.conversation_summary
         )
         
         return response
@@ -107,7 +109,9 @@ async def query_stream(request: QueryRequest):
                 user_id=request.user_id,
                 room_ids=request.room_ids,
                 context_file_id=request.context_file_id,
-                top_k=request.top_k
+                top_k=request.top_k,
+                conversation_history=[msg.dict() for msg in request.conversation_history] if request.conversation_history else None,
+                conversation_summary=request.conversation_summary
             ):
                 yield {
                     "event": event.get("event", "message"),

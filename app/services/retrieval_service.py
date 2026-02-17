@@ -33,7 +33,9 @@ class RetrievalService:
         user_id: str,
         room_ids: List[str],
         context_file_id: Optional[str] = None,
-        top_k: Optional[int] = None
+        top_k: Optional[int] = None,
+        conversation_history: Optional[List[Dict[str, str]]] = None,
+        conversation_summary: Optional[str] = None
     ) -> QueryResponse:
         """
         Execute a RAG query and return a complete response.
@@ -44,6 +46,8 @@ class RetrievalService:
             room_ids: Rooms to search
             context_file_id: Optional specific file to focus on
             top_k: Number of chunks to retrieve
+            conversation_history: Recent conversation messages
+            conversation_summary: Summary of older messages
             
         Returns:
             QueryResponse with answer and sources
@@ -78,8 +82,13 @@ class RetrievalService:
                     chunks_retrieved=0
                 )
             
-            # Step 3: Generate answer with context
-            answer = await llm_service.generate_answer(query, search_results)
+            # Step 3: Generate answer with context and conversation history
+            answer = await llm_service.generate_answer(
+                query=query,
+                search_results=search_results,
+                conversation_history=conversation_history,
+                conversation_summary=conversation_summary
+            )
             
             # Format sources
             sources = [
@@ -118,7 +127,9 @@ class RetrievalService:
         user_id: str,
         room_ids: List[str],
         context_file_id: Optional[str] = None,
-        top_k: Optional[int] = None
+        top_k: Optional[int] = None,
+        conversation_history: Optional[List[Dict[str, str]]] = None,
+        conversation_summary: Optional[str] = None
     ) -> AsyncGenerator[Dict[str, Any], None]:
         """
         Execute a RAG query with streaming response.
@@ -184,9 +195,14 @@ class RetrievalService:
                 "data": {"status": "generating", "message": "Generating answer..."}
             }
             
-            # Step 3: Stream the answer
+            # Step 3: Stream the answer with conversation context
             full_answer = ""
-            async for chunk in llm_service.generate_answer_stream(query, search_results):
+            async for chunk in llm_service.generate_answer_stream(
+                query=query,
+                search_results=search_results,
+                conversation_history=conversation_history,
+                conversation_summary=conversation_summary
+            ):
                 full_answer += chunk
                 yield {
                     "event": "chunk",
