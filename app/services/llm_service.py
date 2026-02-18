@@ -115,7 +115,8 @@ class LLMService:
         query: str,
         context_chunks: List[Dict[str, Any]],
         conversation_history: Optional[List[Dict[str, str]]] = None,
-        conversation_summary: Optional[str] = None
+        conversation_summary: Optional[str] = None,
+        attachment_context: Optional[str] = None
     ) -> str:
         """
         Generate an answer using RAG with retrieved context and conversation history.
@@ -125,6 +126,7 @@ class LLMService:
             context_chunks: Retrieved relevant chunks
             conversation_history: Recent conversation messages (last 8)
             conversation_summary: Summary of older messages
+            attachment_context: Direct attachment content (Flow 1)
             
         Returns:
             Generated answer with citations
@@ -155,6 +157,10 @@ class LLMService:
         if conversation_context:
             prompt += f"{conversation_context}\n\n==="
         
+        # Add attachment context (Flow 1: direct injection)
+        if attachment_context:
+            prompt += f"""\n\nATTACHED FILE CONTENT:\n{attachment_context}\n\n==="""
+        
         prompt += f"""
 
 CONTEXT FROM COURSE MATERIALS:
@@ -163,7 +169,7 @@ CONTEXT FROM COURSE MATERIALS:
 STUDENT QUESTION:
 {query}
 
-Please provide a helpful answer based on the context above{' and the conversation history' if conversation_context else ''}."""
+Please provide a helpful answer based on the context above{' and the conversation history' if conversation_context else ''}{' and the attached file' if attachment_context else ''}."""
 
         try:
             model = genai.GenerativeModel(
@@ -189,10 +195,18 @@ Please provide a helpful answer based on the context above{' and the conversatio
         query: str,
         context_chunks: List[Dict[str, Any]],
         conversation_history: Optional[List[Dict[str, str]]] = None,
-        conversation_summary: Optional[str] = None
+        conversation_summary: Optional[str] = None,
+        attachment_context: Optional[str] = None
     ) -> AsyncGenerator[str, None]:
         """
         Generate answer with streaming for SSE support.
+        
+        Args:
+            query: User's question
+            context_chunks: Retrieved relevant chunks
+            conversation_history: Recent conversation messages
+            conversation_summary: Summary of older messages
+            attachment_context: Direct attachment content (Flow 1)
         
         Yields:
             Chunks of the generated answer
@@ -222,6 +236,10 @@ Please provide a helpful answer based on the context above{' and the conversatio
         if conversation_context:
             prompt += f"{conversation_context}\n\n==="
         
+        # Add attachment context (Flow 1: direct injection)
+        if attachment_context:
+            prompt += f"""\n\nATTACHED FILE CONTENT:\n{attachment_context}\n\n==="""
+        
         prompt += f"""
 
 CONTEXT FROM COURSE MATERIALS:
@@ -230,7 +248,7 @@ CONTEXT FROM COURSE MATERIALS:
 STUDENT QUESTION:
 {query}
 
-Please provide a helpful answer based on the context above{' and the conversation history' if conversation_context else ''}."""
+Please provide a helpful answer based on the context above{' and the conversation history' if conversation_context else ''}{' and the attached file' if attachment_context else ''}."""
 
         try:
             model = genai.GenerativeModel(

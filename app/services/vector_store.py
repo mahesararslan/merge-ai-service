@@ -76,6 +76,16 @@ class VectorStoreService:
                     field_name="file_id",
                     field_schema="keyword"
                 )
+                self.client.create_payload_index(
+                    collection_name=self.collection_name,
+                    field_name="conversation_id",
+                    field_schema="keyword"
+                )
+                self.client.create_payload_index(
+                    collection_name=self.collection_name,
+                    field_name="is_temporary",
+                    field_schema="bool"
+                )
                 
                 logger.info(f"Created collection: {self.collection_name}")
             else:
@@ -333,6 +343,159 @@ class VectorStoreService:
         except Exception as e:
             logger.error(f"Failed to get stats: {str(e)}")
             return {"error": str(e)}
+    
+    async def upsert_temp_attachment_chunks(
+        self,
+        conversation_id: str,
+        points: List[Dict[str, Any]]
+    ) -> int:
+        """
+        Store temporary attachment chunks for a conversation.
+        
+        Args:
+            conversation_id: ID of the conversation
+            points: List of point dicts with vector and payload
+            
+        Returns:
+            Number of points stored
+        """
+        try:
+            point_structs = []
+            
+            for point_data in points:
+                point_id = str(uuid.uuid4())
+                point_structs.append(PointStruct(
+                    id=point_id,
+                    vector=point_data['vector'],
+                    payload=point_data['payload']
+                ))
+            
+            # Batch upsert
+            self.client.upsert(
+                collection_name=self.collection_name,
+                points=point_structs,
+                wait=True
+            )
+            
+            logger.info(
+                f"Stored {len(point_structs)} temp attachment vectors "
+                f"for conversation {conversation_id}"
+            )
+            return len(point_structs)
+            
+        except Exception as e:
+            logger.error(f"Failed to store temp attachment chunks: {str(e)}")
+            raise
+    
+    async def search_by_conversation(
+        self,
+        query_embedding: List[float],
+        conversation_id: str,
+        top_k: int = 5,
+        min_score: float = 0.3
+    ) -> List[Dict[str, Any]]:
+        """
+        Search for vectors belonging to a specific conversation.
+        
+        Args:
+            query_embedding: Query vector
+            conversation_id: Conversation ID to filter by
+            top_k: Number of results to return
+            min_score: Minimum relevance score threshold
+            
+        Returns:
+            List of search results
+        """
+        try:
+            search_filter = Filter(
+                must=[
+                    FieldCondition(
+                        key="conversation_id",
+                        match=MatchValue(value=conversation_id)
+                    ),
+                    FieldCondition(
+                        key="is_temporary",
+                        match=MatchValue(value=True)
+                    )
+                ]
+            )
+            
+            results = self.client.search(
+                collection_name=self.collection_name,
+                query_vector=query_embedding,
+                query_filter=search_filter,
+                limit=top_k,
+                score_threshold=min_score,
+                with_payload=True
+            )
+            
+            formatted_results = []
+            for result in results:
+                formatted_results.append({
+                    "id": result.id,
+                    "score": result.score,
+                    "content": result.payload.get("content", ""),
+                    "file_id": result.payload.get("conversation_id"),  # Use conversation_id
+                    "room_id": "",  # No room for temp attachments
+                    "chunk_index": result.payload.get("chunk_index"),
+                    "section_title": result.payload.get("section_title"),
+                    "document_type": "attachment",
+                })
+            
+            logger.info(
+                f"Found {len(formatted_results)} attachment chunks "
+                f"for conversation {conversation_id}"
+            )
+            return formatted_results
+            
+        except Exception as e:
+            logger.error(f"Conversation search failed: {str(e)}")
+            raise
+    
+    async def delete_conversation_vectors(self, conversation_id: str) -> int:
+        """
+        Delete all temporary vectors for a conversation.
+        
+        Args:
+            conversation_id: Conversation ID
+            
+        Returns:
+            Number of points deleted
+        """
+        try:
+            count_before = self.client.count(
+                collection_name=self.collection_name,
+                count_filter=Filter(
+                    must=[
+                        FieldCondition(
+                            key="conversation_id",
+                            match=MatchValue(value=conversation_id)
+                        )
+                    ]
+                )
+            ).count
+            
+            if count_before > 0:
+                self.client.delete(
+                    collection_name=self.collection_name,
+                    points_selector=models.FilterSelector(
+                        filter=Filter(
+                            must=[
+                                FieldCondition(
+                                    key="conversation_id",
+                                    match=MatchValue(value=conversation_id)
+                                )
+                            ]
+                        )
+                    )
+                )
+                logger.info(f"Deleted {count_before} vectors for conversation {conversation_id}")
+            
+            return count_before
+            
+        except Exception as e:
+            logger.error(f"Failed to delete conversation vectors: {str(e)}")
+            raise
 
 
 # Singleton instance

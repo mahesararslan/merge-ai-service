@@ -13,6 +13,8 @@ from sse_starlette.sse import EventSourceResponse
 
 from app.models import QueryRequest, QueryResponse, ErrorResponse
 from app.services import retrieval_service
+from app.services.document_processor import document_processor
+from app.config import get_settings
 
 logger = logging.getLogger(__name__)
 
@@ -33,10 +35,11 @@ async def query(request: QueryRequest):
     Execute a RAG query and return a complete response.
     
     Process:
-    1. Generate query embedding via Cohere
-    2. Search Qdrant for relevant chunks
-    3. Generate answer using Gemini with context
-    4. Return answer with source citations
+    1. Process attachment if provided (Flow 1 or Flow 2)
+    2. Generate query embedding via Cohere
+    3. Search Qdrant for relevant chunks (dual retrieval if attachment)
+    4. Generate answer using Gemini with context
+    5. Return answer with source citations
     
     Returns:
         QueryResponse with answer, sources, and metadata
@@ -52,7 +55,35 @@ async def query(request: QueryRequest):
             detail="At least one room_id is required"
         )
     
+    settings = get_settings()
+    attachment_result = None
+    
     try:
+        # Process attachment if provided (only on first message with attachment)
+        if request.attachment_s3_url and request.attachment_type:
+            logger.info(
+                f"Processing attachment: type={request.attachment_type}, "
+                f"S3={request.attachment_s3_url[:50]}..."
+            )
+            
+            # Get file size from request (should be validated by NestJS)
+            file_size = getattr(request, 'attachment_file_size', 0)
+            
+            attachment_result = await document_processor.process_attachment(
+                s3_url=request.attachment_s3_url,
+                attachment_type=request.attachment_type,
+                file_size=file_size,
+                text_threshold=settings.attachment_text_size_threshold,
+                file_size_threshold=settings.attachment_file_size_threshold
+            )
+            
+            if not attachment_result['success']:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail=f"Failed to process attachment: {attachment_result['error']}"
+                )
+        
+        # Execute query with attachment context
         response = await retrieval_service.query(
             query=request.query,
             user_id=request.user_id,
@@ -60,11 +91,28 @@ async def query(request: QueryRequest):
             context_file_id=request.context_file_id,
             top_k=request.top_k,
             conversation_history=[msg.dict() for msg in request.conversation_history] if request.conversation_history else None,
-            conversation_summary=request.conversation_summary
+            conversation_summary=request.conversation_summary,
+            conversation_id=request.conversation_id,
+            attachment_context=request.attachment_context,
+            has_vector_attachment=request.has_vector_attachment,
+            attachment_result=attachment_result
         )
+        
+        # Add attachment processing info to response
+        if attachment_result:
+            response.attachment_stored = True
+            response.flow_used = attachment_result['flow']
+            
+            if attachment_result['flow'] == 'direct_injection':
+                response.extracted_content_length = attachment_result['char_count']
+            elif attachment_result['flow'] == 'vector_storage':
+                # chunks_created will be set by retrieval service
+                pass
         
         return response
         
+    except HTTPException:
+        raise
     except Exception as e:
         logger.error(f"Query failed: {str(e)}", exc_info=True)
         raise HTTPException(
@@ -111,7 +159,10 @@ async def query_stream(request: QueryRequest):
                 context_file_id=request.context_file_id,
                 top_k=request.top_k,
                 conversation_history=[msg.dict() for msg in request.conversation_history] if request.conversation_history else None,
-                conversation_summary=request.conversation_summary
+                conversation_summary=request.conversation_summary,
+                conversation_id=request.conversation_id,
+                attachment_context=request.attachment_context,
+                has_vector_attachment=request.has_vector_attachment
             ):
                 yield {
                     "event": event.get("event", "message"),

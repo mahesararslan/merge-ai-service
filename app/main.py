@@ -10,7 +10,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
 from app.config import get_settings
-from app.routes import health_router, ingest_router, query_router, study_plan_router, utils_router
+from app.routes import health_router, ingest_router, query_router, study_plan_router, utils_router, vectors_router
 
 # Configure logging
 settings = get_settings()
@@ -98,6 +98,7 @@ app.include_router(ingest_router)
 app.include_router(query_router)
 app.include_router(study_plan_router)
 app.include_router(utils_router)
+app.include_router(vectors_router)
 
 
 # Root endpoint

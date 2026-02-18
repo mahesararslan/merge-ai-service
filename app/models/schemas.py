@@ -111,6 +111,27 @@ class QueryRequest(BaseModel):
         None, 
         description="Summary of older conversation messages"
     )
+    # File attachment fields (for AI conversation attachments)
+    attachment_s3_url: Optional[str] = Field(
+        None, 
+        description="S3 URL of attached file (for first message with attachment)"
+    )
+    attachment_type: Optional[str] = Field(
+        None, 
+        description="Type of attachment: IMAGE, PDF, DOCX, PPTX, TXT"
+    )
+    attachment_context: Optional[str] = Field(
+        None, 
+        description="Extracted text/base64 content for Flow 1 (small files)"
+    )
+    has_vector_attachment: Optional[bool] = Field(
+        False, 
+        description="Indicates attachment was stored in vector DB (Flow 2)"
+    )
+    conversation_id: Optional[str] = Field(
+        None, 
+        description="Conversation ID for filtering temporary attachment vectors"
+    )
 
 
 class SourceChunk(BaseModel):
@@ -129,6 +150,23 @@ class QueryResponse(BaseModel):
     query: str
     processing_time_ms: float
     chunks_retrieved: int
+    # Attachment processing results
+    attachment_stored: Optional[bool] = Field(
+        None, 
+        description="Whether attachment was successfully processed"
+    )
+    extracted_content_length: Optional[int] = Field(
+        None, 
+        description="Character count of extracted content (Flow 1)"
+    )
+    chunks_created_for_attachment: Optional[int] = Field(
+        None, 
+        description="Number of chunks created from attachment (Flow 2)"
+    )
+    flow_used: Optional[str] = Field(
+        None, 
+        description="Which processing flow was used: 'direct_injection' or 'vector_storage'"
+    )
 
 
 # =============================================================================

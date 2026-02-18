@@ -5,7 +5,8 @@ Supports PDF, DOCX, PPTX, and TXT files.
 
 import logging
 import re
-from typing import Tuple, Optional
+import base64
+from typing import Tuple, Optional, Dict, Any
 from io import BytesIO
 
 import fitz  # PyMuPDF
@@ -243,6 +244,139 @@ class DocumentProcessor:
         text = re.sub(r'(\w)-\n(\w)', r'\1\2', text)  # Fix hyphenated line breaks
         
         return text.strip()
+    
+    async def process_attachment(
+        self,
+        s3_url: str,
+        attachment_type: str,
+        file_size: int,
+        text_threshold: int,
+        file_size_threshold: int
+    ) -> Dict[str, Any]:
+        """
+        Process attachment file with intelligent flow decision.
+        
+        Flow 1 (Direct Injection): Small files - extract text/base64 and return content
+        Flow 2 (Vector Storage): Large files - return file content for chunking/embedding
+        
+        Args:
+            s3_url: S3 URL of the attachment
+            attachment_type: Type of attachment (IMAGE, PDF, DOCX, PPTX, TXT)
+            file_size: File size in bytes
+            text_threshold: Character count threshold for Flow 1
+            file_size_threshold: File size threshold in bytes
+            
+        Returns:
+            Dict with:
+                - success: bool
+                - flow: "direct_injection" or "vector_storage"
+                - extracted_content: str (for Flow 1) or None
+                - file_content: bytes (for Flow 2) or None
+                - error: str or None
+                - char_count: int (extracted text length)
+        """
+        try:
+            # Download file from S3
+            file_content, error = await self.download_from_s3(s3_url)
+            if error:
+                return {
+                    "success": False,
+                    "flow": None,
+                    "extracted_content": None,
+                    "file_content": None,
+                    "error": error,
+                    "char_count": 0
+                }
+            
+            # Process based on attachment type
+            if attachment_type.upper() == "IMAGE":
+                # Convert image to base64
+                extracted_content = base64.b64encode(file_content).decode('utf-8')
+                # Prefix with data URI scheme for images
+                extracted_content = f"data:image/*;base64,{extracted_content}"
+                char_count = len(extracted_content)
+                
+            else:
+                # Extract text from document
+                doc_type_map = {
+                    "PDF": DocumentType.PDF,
+                    "DOCX": DocumentType.DOCX,
+                    "PPTX": DocumentType.PPTX,
+                    "TXT": DocumentType.TXT
+                }
+                
+                doc_type = doc_type_map.get(attachment_type.upper())
+                if not doc_type:
+                    return {
+                        "success": False,
+                        "flow": None,
+                        "extracted_content": None,
+                        "file_content": None,
+                        "error": f"Unsupported attachment type: {attachment_type}",
+                        "char_count": 0
+                    }
+                
+                extracted_content, extract_error = await self.extract_text(
+                    file_content, 
+                    doc_type
+                )
+                
+                if extract_error:
+                    return {
+                        "success": False,
+                        "flow": None,
+                        "extracted_content": None,
+                        "file_content": None,
+                        "error": extract_error,
+                        "char_count": 0
+                    }
+                
+                char_count = len(extracted_content)
+            
+            # Decision logic: BOTH conditions must be met for Flow 1
+            use_direct_injection = (
+                char_count <= text_threshold and 
+                file_size <= file_size_threshold
+            )
+            
+            if use_direct_injection:
+                logger.info(
+                    f"Flow 1 (Direct Injection): {char_count} chars, "
+                    f"{file_size} bytes - under thresholds"
+                )
+                return {
+                    "success": True,
+                    "flow": "direct_injection",
+                    "extracted_content": extracted_content,
+                    "file_content": None,
+                    "error": None,
+                    "char_count": char_count
+                }
+            else:
+                logger.info(
+                    f"Flow 2 (Vector Storage): {char_count} chars, "
+                    f"{file_size} bytes - exceeds thresholds "
+                    f"(text: {text_threshold}, size: {file_size_threshold})"
+                )
+                return {
+                    "success": True,
+                    "flow": "vector_storage",
+                    "extracted_content": extracted_content,  # For chunking
+                    "file_content": None,
+                    "error": None,
+                    "char_count": char_count
+                }
+                
+        except Exception as e:
+            logger.error(f"Error processing attachment: {str(e)}", exc_info=True)
+            return {
+                "success": False,
+                "flow": None,
+                "extracted_content": None,
+                "file_content": None,
+                "error": f"Failed to process attachment: {str(e)}",
+                "char_count": 0
+            }
 
 
 # Singleton instance

@@ -40,6 +40,14 @@ class Settings(BaseSettings):
     # File Processing
     max_file_size_mb: int = Field(default=10, alias="MAX_FILE_SIZE_MB")
     
+    # File Attachment Configuration (for AI conversation attachments)
+    attachment_text_size_threshold: int = Field(default=80000, alias="ATTACHMENT_TEXT_SIZE_THRESHOLD")
+    attachment_file_size_threshold: int = Field(default=8388608, alias="ATTACHMENT_FILE_SIZE_THRESHOLD")
+    max_document_size: int = Field(default=15728640, alias="MAX_DOCUMENT_SIZE")
+    max_text_size: int = Field(default=5242880, alias="MAX_TEXT_SIZE")
+    max_image_size: int = Field(default=5242880, alias="MAX_IMAGE_SIZE")
+    temp_vector_ttl_days: int = Field(default=7, alias="TEMP_VECTOR_TTL_DAYS")
+    
     # Server Configuration
     port: int = Field(default=8001, alias="PORT")
     log_level: str = Field(default="INFO", alias="LOG_LEVEL")
