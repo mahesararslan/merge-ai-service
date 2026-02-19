@@ -172,20 +172,15 @@ class RetrievalService:
                     min_score=min_score
                 )
             
-            if not search_results:
-                logger.info(f"No relevant chunks found for query")
-                return QueryResponse(
-                    answer="I couldn't find any relevant information in your course materials to answer this question. Please make sure you've uploaded relevant documents to your study room.",
-                    sources=[],
-                    query=query,
-                    processing_time_ms=(time.time() - start_time) * 1000,
-                    chunks_retrieved=0
-                )
+            # Step 3: Generate answer with LLM
+            # Always generate answer - with course materials, attachment, or general knowledge
+            if not search_results and not attachment_context:
+                logger.info(f"No relevant chunks or attachment found - using general LLM knowledge")
             
-            # Step 3: Generate answer with context and conversation history
+            # Generate answer with available context (chunks, attachment, or nothing)
             answer = await llm_service.generate_answer(
                 query=query,
-                context_chunks=search_results,
+                context_chunks=search_results if search_results else [],
                 conversation_history=conversation_history,
                 conversation_summary=conversation_summary,
                 attachment_context=attachment_context
@@ -273,32 +268,24 @@ class RetrievalService:
                 min_score=min_score
             )
             
-            if not search_results:
-                yield {
-                    "event": "complete",
-                    "data": {
-                        "answer": "I couldn't find any relevant information in your course materials.",
-                        "sources": [],
-                        "chunks_retrieved": 0
+            # Yield sources if found
+            if search_results:
+                sources = [
+                    {
+                        "file_id": result['file_id'],
+                        "chunk_index": result['chunk_index'],
+                        "relevance_score": result['score'],
+                        "section_title": result.get('section_title')
                     }
+                    for result in search_results
+                ]
+                
+                yield {
+                    "event": "sources",
+                    "data": {"sources": sources, "count": len(sources)}
                 }
-                return
-            
-            # Yield sources first
-            sources = [
-                {
-                    "file_id": result['file_id'],
-                    "chunk_index": result['chunk_index'],
-                    "relevance_score": result['score'],
-                    "section_title": result.get('section_title')
-                }
-                for result in search_results
-            ]
-            
-            yield {
-                "event": "sources",
-                "data": {"sources": sources, "count": len(sources)}
-            }
+            else:
+                logger.info(f"No relevant chunks found - using general LLM knowledge")
             
             yield {
                 "event": "status",
@@ -309,7 +296,7 @@ class RetrievalService:
             full_answer = ""
             async for chunk in llm_service.generate_answer_stream(
                 query=query,
-                context_chunks=search_results,
+                context_chunks=search_results if search_results else [],
                 conversation_history=conversation_history,
                 conversation_summary=conversation_summary,
                 attachment_context=attachment_context
@@ -327,7 +314,7 @@ class RetrievalService:
                 "event": "complete",
                 "data": {
                     "processing_time_ms": processing_time,
-                    "chunks_retrieved": len(sources)
+                    "chunks_retrieved": len(search_results) if search_results else 0
                 }
             }
             

@@ -16,22 +16,25 @@ logger = logging.getLogger(__name__)
 
 
 # System prompts
-RAG_SYSTEM_PROMPT = """You are an AI study assistant helping students understand their course materials. 
+RAG_SYSTEM_PROMPT = """You are an AI study assistant helping students learn and understand concepts.
 
 INSTRUCTIONS:
-1. Answer questions ONLY based on the provided context from course materials
-2. Always cite your sources by mentioning which document/section the information comes from
-3. If the context doesn't contain enough information to answer, clearly state: "I don't have enough information in the course materials to answer this question fully."
+1. If course materials or attached files are provided, prioritize answering from those sources
+2. If no specific context is provided, answer using your general knowledge
+3. Always be clear about your sources:
+   - When using course materials: Cite which document/section
+   - When using attached files: Mention you're referencing the attached file
+   - When using general knowledge: You can mention "Based on general knowledge" if appropriate
 4. Be concise but thorough - aim for 2-4 paragraphs
 5. Use bullet points or numbered lists when appropriate for clarity
-6. If you notice related topics in the context that might be helpful, briefly mention them
+6. If you notice related topics that might be helpful, briefly mention them
 
 FORMAT:
 - Start with a direct answer to the question
-- Support with evidence from the context
-- End with source citations
+- Support with evidence from context (if available) or clear explanations
+- Provide helpful, accurate information
 
-Remember: You are helping students learn, so explain concepts clearly."""
+Remember: You are helping students learn, so explain concepts clearly and be educational."""
 
 STUDY_PLAN_SYSTEM_PROMPT = """You are an AI study planning assistant. Your job is to create personalized, realistic study schedules.
 
@@ -161,15 +164,21 @@ class LLMService:
         if attachment_context:
             prompt += f"""\n\nATTACHED FILE CONTENT:\n{attachment_context}\n\n==="""
         
-        prompt += f"""
+        # Add course materials context if available
+        if context_text:
+            prompt += f"""
 
 CONTEXT FROM COURSE MATERIALS:
 {context_text}
 
+==="""
+        
+        prompt += f"""
+
 STUDENT QUESTION:
 {query}
 
-Please provide a helpful answer based on the context above{' and the conversation history' if conversation_context else ''}{' and the attached file' if attachment_context else ''}."""
+Please provide a helpful answer based on the {'available context' if context_text or attachment_context else 'question'}."""
 
         try:
             model = genai.GenerativeModel(
@@ -240,15 +249,21 @@ Please provide a helpful answer based on the context above{' and the conversatio
         if attachment_context:
             prompt += f"""\n\nATTACHED FILE CONTENT:\n{attachment_context}\n\n==="""
         
-        prompt += f"""
+        # Add course materials context if available
+        if context_text:
+            prompt += f"""
 
 CONTEXT FROM COURSE MATERIALS:
 {context_text}
 
+==="""
+        
+        prompt += f"""
+
 STUDENT QUESTION:
 {query}
 
-Please provide a helpful answer based on the context above{' and the conversation history' if conversation_context else ''}{' and the attached file' if attachment_context else ''}."""
+Please provide a helpful answer based on the {'available context' if context_text or attachment_context else 'question'}."""
 
         try:
             model = genai.GenerativeModel(

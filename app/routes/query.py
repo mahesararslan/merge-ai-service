@@ -66,8 +66,8 @@ async def query(request: QueryRequest):
                 f"S3={request.attachment_s3_url[:50]}..."
             )
             
-            # Get file size from request (should be validated by NestJS)
-            file_size = getattr(request, 'attachment_file_size', 0)
+            # Get file size from request
+            file_size = request.attachment_file_size or 0
             
             attachment_result = await document_processor.process_attachment(
                 s3_url=request.attachment_s3_url,
@@ -104,6 +104,7 @@ async def query(request: QueryRequest):
             response.flow_used = attachment_result['flow']
             
             if attachment_result['flow'] == 'direct_injection':
+                response.extracted_content = attachment_result['extracted_content']
                 response.extracted_content_length = attachment_result['char_count']
             elif attachment_result['flow'] == 'vector_storage':
                 # chunks_created will be set by retrieval service

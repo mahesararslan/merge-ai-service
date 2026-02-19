@@ -120,6 +120,10 @@ class QueryRequest(BaseModel):
         None, 
         description="Type of attachment: IMAGE, PDF, DOCX, PPTX, TXT"
     )
+    attachment_file_size: Optional[int] = Field(
+        None,
+        description="File size in bytes (for flow decision)"
+    )
     attachment_context: Optional[str] = Field(
         None, 
         description="Extracted text/base64 content for Flow 1 (small files)"
