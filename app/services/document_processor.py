@@ -276,9 +276,17 @@ class DocumentProcessor:
                 - char_count: int (extracted text length)
         """
         try:
+            logger.info(
+                f"[ATTACHMENT] Starting processing - "
+                f"type={attachment_type}, size={file_size} bytes, "
+                f"thresholds: text={text_threshold} chars, size={file_size_threshold} bytes"
+            )
+            
             # Download file from S3
+            logger.info(f"[ATTACHMENT] Downloading from S3: {s3_url[:60]}...")
             file_content, error = await self.download_from_s3(s3_url)
             if error:
+                logger.error(f"[ATTACHMENT] ✗ S3 download failed: {error}")
                 return {
                     "success": False,
                     "flow": None,
@@ -288,15 +296,20 @@ class DocumentProcessor:
                     "char_count": 0
                 }
             
+            logger.info(f"[ATTACHMENT] ✓ Downloaded {len(file_content)} bytes from S3")
+            
             # Process based on attachment type
             if attachment_type.upper() == "IMAGE":
+                logger.info(f"[ATTACHMENT] Processing as IMAGE - converting to base64")
                 # Convert image to base64
                 extracted_content = base64.b64encode(file_content).decode('utf-8')
                 # Prefix with data URI scheme for images
                 extracted_content = f"data:image/*;base64,{extracted_content}"
                 char_count = len(extracted_content)
+                logger.info(f"[ATTACHMENT] ✓ Image converted: {char_count} chars (base64)")
                 
             else:
+                logger.info(f"[ATTACHMENT] Processing as DOCUMENT - extracting text")
                 # Extract text from document
                 doc_type_map = {
                     "PDF": DocumentType.PDF,
@@ -322,6 +335,7 @@ class DocumentProcessor:
                 )
                 
                 if extract_error:
+                    logger.error(f"[ATTACHMENT] ✗ Text extraction failed: {extract_error}")
                     return {
                         "success": False,
                         "flow": None,
@@ -332,6 +346,8 @@ class DocumentProcessor:
                     }
                 
                 char_count = len(extracted_content)
+                logger.info(f"[ATTACHMENT] ✓ Text extracted: {char_count} chars from {attachment_type}")
+                logger.debug(f"[ATTACHMENT] Text preview: {extracted_content[:200]}...")
             
             # Decision logic: BOTH conditions must be met for Flow 1
             use_direct_injection = (
@@ -339,10 +355,15 @@ class DocumentProcessor:
                 file_size <= file_size_threshold
             )
             
+            logger.info(
+                f"[ATTACHMENT] Flow decision - "
+                f"char_count={char_count} (threshold: {text_threshold}), "
+                f"file_size={file_size} (threshold: {file_size_threshold})"
+            )
+            
             if use_direct_injection:
                 logger.info(
-                    f"Flow 1 (Direct Injection): {char_count} chars, "
-                    f"{file_size} bytes - under thresholds"
+                    f"[ATTACHMENT] → FLOW 1 (Direct Injection): Both under threshold"
                 )
                 return {
                     "success": True,
@@ -354,9 +375,8 @@ class DocumentProcessor:
                 }
             else:
                 logger.info(
-                    f"Flow 2 (Vector Storage): {char_count} chars, "
-                    f"{file_size} bytes - exceeds thresholds "
-                    f"(text: {text_threshold}, size: {file_size_threshold})"
+                    f"[ATTACHMENT] → FLOW 2 (Vector Storage): "
+                    f"Exceeds threshold (chars: {char_count > text_threshold}, size: {file_size > file_size_threshold})"
                 )
                 return {
                     "success": True,

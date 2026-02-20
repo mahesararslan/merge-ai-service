@@ -75,22 +75,27 @@ class RetrievalService:
         try:
             # Handle Flow 2: Chunk and embed attachment for vector storage
             if attachment_result and attachment_result['flow'] == 'vector_storage':
-                logger.info("Flow 2: Chunking and embedding attachment for vector storage")
+                logger.info(
+                    f"[ATTACHMENT] Flow 2 Processing: Chunking and embedding attachment for vector storage"
+                )
                 
                 # Chunk the extracted text
                 extracted_text = attachment_result.get('extracted_content') or ""
                 if not extracted_text:
                     # Re-extract if not available (shouldn't happen but safety check)
-                    logger.warning("Flow 2: No extracted text, cannot process attachment")
+                    logger.warning("[ATTACHMENT] ⚠ Flow 2: No extracted text, cannot process attachment")
                 else:
+                    logger.info(f"[ATTACHMENT] Chunking {len(extracted_text)} chars of text...")
                     chunks = self.chunking_service.chunk_text(extracted_text)
                     chunks_created_for_attachment = len(chunks)
                     
-                    logger.info(f"Created {chunks_created_for_attachment} chunks from attachment")
+                    logger.info(f"[ATTACHMENT] ✓ Created {chunks_created_for_attachment} chunks from attachment")
                     
                     # Generate embeddings for all chunks
                     chunk_texts = [chunk.content for chunk in chunks]
+                    logger.info(f"[ATTACHMENT] Generating embeddings for {len(chunk_texts)} chunks...")
                     embeddings = await embedding_service.embed_documents(chunk_texts)
+                    logger.info(f"[ATTACHMENT] ✓ Generated {len(embeddings)} embeddings")
                     
                     # Calculate TTL expiration
                     ttl_expires_at = datetime.utcnow() + timedelta(days=self.settings.temp_vector_ttl_days)
@@ -115,14 +120,15 @@ class RetrievalService:
                         points_to_insert.append(point)
                     
                     # Insert into vector store
+                    logger.info(f"[ATTACHMENT] Upserting {len(points_to_insert)} points to Qdrant...")
                     await vector_store_service.upsert_temp_attachment_chunks(
                         conversation_id=conversation_id,
                         points=points_to_insert
                     )
                     
                     logger.info(
-                        f"Stored {chunks_created_for_attachment} attachment chunks "
-                        f"in vector DB for conversation {conversation_id}"
+                        f"[ATTACHMENT] ✓ Flow 2 Complete: Stored {chunks_created_for_attachment} chunks "
+                        f"in vector DB for conversation {conversation_id}, TTL: {ttl_expires_at.isoformat()}"
                     )
             
             # Step 1: Generate query embedding
@@ -175,7 +181,11 @@ class RetrievalService:
             # Step 3: Generate answer with LLM
             # Always generate answer - with course materials, attachment, or general knowledge
             if not search_results and not attachment_context:
-                logger.info(f"No relevant chunks or attachment found - using general LLM knowledge")
+                logger.info(f"[LLM] No relevant chunks or attachment found - using general LLM knowledge")
+            elif attachment_context:
+                logger.info(f"[LLM] Using attachment_context ({len(attachment_context)} chars) + {len(search_results)} chunks")
+            else:
+                logger.info(f"[LLM] Using {len(search_results)} chunks from vector store")
             
             # Generate answer with available context (chunks, attachment, or nothing)
             answer = await llm_service.generate_answer(
@@ -216,6 +226,9 @@ class RetrievalService:
             # Add attachment info if applicable
             if chunks_created_for_attachment > 0:
                 response.chunks_created_for_attachment = chunks_created_for_attachment
+                logger.info(
+                    f"[ATTACHMENT] Adding chunks_created_for_attachment={chunks_created_for_attachment} to response"
+                )
             
             return response
             

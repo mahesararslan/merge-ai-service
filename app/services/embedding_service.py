@@ -44,8 +44,18 @@ class EmbeddingService:
             all_embeddings = []
             batch_size = 96
             
+            total_batches = (len(texts) + batch_size - 1) // batch_size
+            logger.info(
+                f"[EMBEDDING] Generating embeddings for {len(texts)} documents in {total_batches} batch(es)"
+            )
+            
             for i in range(0, len(texts), batch_size):
                 batch = texts[i:i + batch_size]
+                batch_num = (i // batch_size) + 1
+                
+                logger.info(
+                    f"[EMBEDDING] Batch {batch_num}/{total_batches}: Processing {len(batch)} texts..."
+                )
                 
                 response = self.client.embed(
                     texts=batch,
@@ -55,8 +65,11 @@ class EmbeddingService:
                 )
                 
                 all_embeddings.extend(response.embeddings)
+                logger.info(
+                    f"[EMBEDDING] ✓ Batch {batch_num}/{total_batches}: Generated {len(response.embeddings)} embeddings"
+                )
             
-            logger.info(f"Generated {len(all_embeddings)} document embeddings")
+            logger.info(f"[EMBEDDING] ✓ Total: Generated {len(all_embeddings)} document embeddings")
             return all_embeddings
             
         except cohere.CohereError as e:
@@ -78,6 +91,7 @@ class EmbeddingService:
             Embedding vector
         """
         try:
+            logger.info(f"[EMBEDDING] Generating query embedding (length: {len(query)} chars)")
             response = self.client.embed(
                 texts=[query],
                 model=self.model,
@@ -85,7 +99,8 @@ class EmbeddingService:
                 truncate="END"
             )
             
-            logger.debug(f"Generated query embedding for: {query[:50]}...")
+            logger.info(f"[EMBEDDING] ✓ Query embedding generated (dimension: {len(response.embeddings[0])})")
+            logger.debug(f"[EMBEDDING] Query: {query[:100]}...")
             return response.embeddings[0]
             
         except cohere.CohereError as e:

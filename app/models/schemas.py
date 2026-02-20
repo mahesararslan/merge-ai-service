@@ -159,6 +159,14 @@ class QueryResponse(BaseModel):
         None, 
         description="Whether attachment was successfully processed"
     )
+    flow_used: Optional[str] = Field(
+        None, 
+        description="Which processing flow was used: 'direct_injection' or 'vector_storage'"
+    )
+    extracted_content: Optional[str] = Field(
+        None,
+        description="Extracted text/base64 content for Flow 1 (direct injection)"
+    )
     extracted_content_length: Optional[int] = Field(
         None, 
         description="Character count of extracted content (Flow 1)"
@@ -166,10 +174,6 @@ class QueryResponse(BaseModel):
     chunks_created_for_attachment: Optional[int] = Field(
         None, 
         description="Number of chunks created from attachment (Flow 2)"
-    )
-    flow_used: Optional[str] = Field(
-        None, 
-        description="Which processing flow was used: 'direct_injection' or 'vector_storage'"
     )
 
 

@@ -62,7 +62,9 @@ async def query(request: QueryRequest):
         # Process attachment if provided (only on first message with attachment)
         if request.attachment_s3_url and request.attachment_type:
             logger.info(
-                f"Processing attachment: type={request.attachment_type}, "
+                f"[ATTACHMENT] Received attachment request - "
+                f"type={request.attachment_type}, "
+                f"size={request.attachment_file_size or 0} bytes, "
                 f"S3={request.attachment_s3_url[:50]}..."
             )
             
@@ -103,12 +105,25 @@ async def query(request: QueryRequest):
             response.attachment_stored = True
             response.flow_used = attachment_result['flow']
             
+            logger.info(
+                f"[ATTACHMENT] Attachment processed - flow={attachment_result['flow']}, "
+                f"char_count={attachment_result['char_count']}"
+            )
+            
             if attachment_result['flow'] == 'direct_injection':
                 response.extracted_content = attachment_result['extracted_content']
                 response.extracted_content_length = attachment_result['char_count']
+                logger.info(
+                    f"[ATTACHMENT] ✓ Flow 1: Returning extracted_content ({len(response.extracted_content)} chars) to NestJS"
+                )
+                logger.debug(
+                    f"[ATTACHMENT] Content preview: {attachment_result['extracted_content'][:200]}..."
+                )
             elif attachment_result['flow'] == 'vector_storage':
                 # chunks_created will be set by retrieval service
-                pass
+                logger.info(
+                    f"[ATTACHMENT] ✓ Flow 2: Vector storage selected (chunks will be created in retrieval)"
+                )
         
         return response
         
