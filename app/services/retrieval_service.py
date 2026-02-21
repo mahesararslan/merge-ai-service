@@ -180,10 +180,23 @@ class RetrievalService:
             
             # Step 3: Generate answer with LLM
             # Always generate answer - with course materials, attachment, or general knowledge
-            if not search_results and not attachment_context:
-                logger.info(f"[LLM] No relevant chunks or attachment found - using general LLM knowledge")
+            
+            # Determine attachment context to use (first message vs subsequent messages)
+            final_attachment_context = None
+            if attachment_result and attachment_result['flow'] == 'direct_injection':
+                # First message with Flow 1: Use freshly extracted content
+                final_attachment_context = attachment_result.get('extracted_content')
+                logger.info(
+                    f"[LLM] Using freshly extracted attachment content ({len(final_attachment_context or '')} chars) + {len(search_results)} chunks"
+                )
             elif attachment_context:
-                logger.info(f"[LLM] Using attachment_context ({len(attachment_context)} chars) + {len(search_results)} chunks")
+                # Subsequent message: Use stored context from conversation
+                final_attachment_context = attachment_context
+                logger.info(
+                    f"[LLM] Using stored attachment_context ({len(final_attachment_context)} chars) + {len(search_results)} chunks"
+                )
+            elif not search_results:
+                logger.info(f"[LLM] No relevant chunks or attachment found - using general LLM knowledge")
             else:
                 logger.info(f"[LLM] Using {len(search_results)} chunks from vector store")
             
@@ -193,7 +206,7 @@ class RetrievalService:
                 context_chunks=search_results if search_results else [],
                 conversation_history=conversation_history,
                 conversation_summary=conversation_summary,
-                attachment_context=attachment_context
+                attachment_context=final_attachment_context
             )
             
             # Format sources
