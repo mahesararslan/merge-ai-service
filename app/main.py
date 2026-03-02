@@ -5,11 +5,12 @@ AI Study Assistant - Main FastAPI Application
 import logging
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI, Request
+from fastapi import FastAPI, Request, Depends
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
 from app.config import get_settings
+from app.auth import verify_api_key
 from app.routes import health_router, ingest_router, query_router, study_plan_router, utils_router, vectors_router
 
 # Configure logging
@@ -93,12 +94,15 @@ async def global_exception_handler(request: Request, exc: Exception):
 
 
 # Register routers
+# Health check is public (no authentication required for monitoring)
 app.include_router(health_router)
-app.include_router(ingest_router)
-app.include_router(query_router)
-app.include_router(study_plan_router)
-app.include_router(utils_router)
-app.include_router(vectors_router)
+
+# Protected routes - require API key authentication
+app.include_router(ingest_router, dependencies=[Depends(verify_api_key)])
+app.include_router(query_router, dependencies=[Depends(verify_api_key)])
+app.include_router(study_plan_router, dependencies=[Depends(verify_api_key)])
+app.include_router(utils_router, dependencies=[Depends(verify_api_key)])
+app.include_router(vectors_router, dependencies=[Depends(verify_api_key)])
 
 
 # Root endpoint

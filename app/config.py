@@ -12,6 +12,9 @@ from typing import Optional
 class Settings(BaseSettings):
     """Application settings loaded from environment variables."""
     
+    # Security - API Key Authentication
+    api_key: str = Field(alias="AI_SERVICE_API_KEY")
+    
     # Qdrant Vector Database
     qdrant_url: str = Field(default="http://localhost:6333", alias="QDRANT_URL")
     qdrant_api_key: Optional[str] = Field(default=None, alias="QDRANT_API_KEY")
