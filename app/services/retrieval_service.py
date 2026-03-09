@@ -260,40 +260,126 @@ class RetrievalService:
         conversation_summary: Optional[str] = None,
         conversation_id: Optional[str] = None,
         attachment_context: Optional[str] = None,
-        has_vector_attachment: Optional[bool] = False
+        has_vector_attachment: Optional[bool] = False,
+        attachment_result: Optional[Dict[str, Any]] = None
     ) -> AsyncGenerator[Dict[str, Any], None]:
         """
         Execute a RAG query with streaming response.
-        
+
         Yields:
             Dict events for SSE streaming
         """
         start_time = time.time()
-        
+
         k = top_k or self.settings.top_k_results
         min_score = self.settings.min_relevance_score
-        
+
         logger.info(f"Processing streaming query from user {user_id}")
-        
+
+        chunks_created_for_attachment = 0
+
         try:
             # Yield status event
             yield {
                 "event": "status",
                 "data": {"status": "searching", "message": "Searching course materials..."}
             }
-            
+
+            # Handle Flow 2: Chunk and embed attachment for vector storage
+            if attachment_result and attachment_result['flow'] == 'vector_storage':
+                logger.info(
+                    f"[ATTACHMENT] Stream Flow 2: Chunking and embedding attachment for vector storage"
+                )
+
+                extracted_text = attachment_result.get('extracted_content') or ""
+                if not extracted_text:
+                    logger.warning("[ATTACHMENT] ⚠ Stream Flow 2: No extracted text, cannot process attachment")
+                else:
+                    logger.info(f"[ATTACHMENT] Chunking {len(extracted_text)} chars of text...")
+                    chunks = self.chunking_service.chunk_text(extracted_text)
+                    chunks_created_for_attachment = len(chunks)
+
+                    logger.info(f"[ATTACHMENT] ✓ Created {chunks_created_for_attachment} chunks from attachment")
+
+                    chunk_texts = [chunk.content for chunk in chunks]
+                    logger.info(f"[ATTACHMENT] Generating embeddings for {len(chunk_texts)} chunks...")
+                    embeddings = await embedding_service.embed_documents(chunk_texts)
+                    logger.info(f"[ATTACHMENT] ✓ Generated {len(embeddings)} embeddings")
+
+                    ttl_expires_at = datetime.utcnow() + timedelta(days=self.settings.temp_vector_ttl_days)
+
+                    points_to_insert = []
+                    for idx, (chunk, embedding) in enumerate(zip(chunks, embeddings)):
+                        point = {
+                            "vector": embedding,
+                            "payload": {
+                                "conversation_id": conversation_id,
+                                "is_temporary": True,
+                                "ttl_expires_at": ttl_expires_at.isoformat(),
+                                "chunk_index": idx,
+                                "total_chunks": chunks_created_for_attachment,
+                                "content": chunk.content,
+                                "char_count": chunk.char_count,
+                                "section_title": chunk.section_title,
+                                "timestamp": datetime.utcnow().isoformat()
+                            }
+                        }
+                        points_to_insert.append(point)
+
+                    logger.info(f"[ATTACHMENT] Upserting {len(points_to_insert)} points to Qdrant...")
+                    await vector_store_service.upsert_temp_attachment_chunks(
+                        conversation_id=conversation_id,
+                        points=points_to_insert
+                    )
+
+                    logger.info(
+                        f"[ATTACHMENT] ✓ Stream Flow 2 Complete: Stored {chunks_created_for_attachment} chunks "
+                        f"in vector DB for conversation {conversation_id}"
+                    )
+
+                    # Mark for dual retrieval below
+                    has_vector_attachment = True
+
             # Step 1: Generate query embedding
             query_embedding = await embedding_service.embed_query(query)
-            
-            # Step 2: Search vector store
-            search_results = await vector_store_service.search(
-                query_embedding=query_embedding,
-                room_ids=room_ids,
-                file_id=context_file_id,
-                top_k=k,
-                min_score=min_score
-            )
-            
+
+            # Step 2: Search vector store (dual retrieval if attachment in vector DB)
+            if has_vector_attachment and conversation_id:
+                logger.info("Stream: Dual retrieval - searching both room content and attachment vectors")
+
+                room_results = await vector_store_service.search(
+                    query_embedding=query_embedding,
+                    room_ids=room_ids,
+                    file_id=context_file_id,
+                    top_k=k,
+                    min_score=min_score
+                )
+
+                attachment_results = await vector_store_service.search_by_conversation(
+                    query_embedding=query_embedding,
+                    conversation_id=conversation_id,
+                    top_k=k,
+                    min_score=min_score
+                )
+
+                all_results = room_results + attachment_results
+                all_results.sort(key=lambda x: x['score'], reverse=True)
+                search_results = all_results[:k]
+
+                logger.info(
+                    f"Stream: Merged {len(room_results)} room chunks + "
+                    f"{len(attachment_results)} attachment chunks = "
+                    f"{len(search_results)} total"
+                )
+            else:
+                search_results = await vector_store_service.search(
+                    query_embedding=query_embedding,
+                    room_ids=room_ids,
+                    file_id=context_file_id,
+                    top_k=k,
+                    min_score=min_score
+                )
+
             # Yield sources if found
             if search_results:
                 sources = [
@@ -305,19 +391,32 @@ class RetrievalService:
                     }
                     for result in search_results
                 ]
-                
+
                 yield {
                     "event": "sources",
                     "data": {"sources": sources, "count": len(sources)}
                 }
             else:
                 logger.info(f"No relevant chunks found - using general LLM knowledge")
-            
+
             yield {
                 "event": "status",
                 "data": {"status": "generating", "message": "Generating answer..."}
             }
-            
+
+            # Determine attachment context for LLM (first message vs subsequent)
+            final_attachment_context = None
+            if attachment_result and attachment_result['flow'] == 'direct_injection':
+                final_attachment_context = attachment_result.get('extracted_content')
+                logger.info(
+                    f"[LLM] Stream: Using freshly extracted attachment content ({len(final_attachment_context or '')} chars)"
+                )
+            elif attachment_context:
+                final_attachment_context = attachment_context
+                logger.info(
+                    f"[LLM] Stream: Using stored attachment_context ({len(final_attachment_context)} chars)"
+                )
+
             # Step 3: Stream the answer with conversation context and attachment
             full_answer = ""
             async for chunk in llm_service.generate_answer_stream(
@@ -325,27 +424,38 @@ class RetrievalService:
                 context_chunks=search_results if search_results else [],
                 conversation_history=conversation_history,
                 conversation_summary=conversation_summary,
-                attachment_context=attachment_context
+                attachment_context=final_attachment_context
             ):
                 full_answer += chunk
                 yield {
                     "event": "chunk",
                     "data": {"text": chunk}
                 }
-            
+
             processing_time = (time.time() - start_time) * 1000
-            
+
+            # Build complete event data with attachment metadata
+            complete_data = {
+                "processing_time_ms": processing_time,
+                "chunks_retrieved": len(search_results) if search_results else 0
+            }
+
+            if attachment_result:
+                complete_data["flow_used"] = attachment_result['flow']
+                if attachment_result['flow'] == 'direct_injection':
+                    complete_data["extracted_content"] = attachment_result.get('extracted_content')
+                    complete_data["extracted_content_length"] = attachment_result.get('char_count', 0)
+                elif attachment_result['flow'] == 'vector_storage':
+                    complete_data["chunks_created_for_attachment"] = chunks_created_for_attachment
+
             # Final complete event
             yield {
                 "event": "complete",
-                "data": {
-                    "processing_time_ms": processing_time,
-                    "chunks_retrieved": len(search_results) if search_results else 0
-                }
+                "data": complete_data
             }
-            
+
             logger.info(f"Streaming query completed in {processing_time:.0f}ms")
-            
+
         except Exception as e:
             logger.error(f"Streaming query failed: {str(e)}")
             yield {

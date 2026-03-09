@@ -141,14 +141,14 @@ async def query(request: QueryRequest):
 async def query_stream(request: QueryRequest):
     """
     Execute a RAG query with streaming response using Server-Sent Events.
-    
+
     Events emitted:
     - status: Processing status updates
     - sources: Retrieved source documents
     - chunk: Answer text chunks as they're generated
     - complete: Final metadata when done
     - error: Error information if something fails
-    
+
     Returns:
         EventSourceResponse with SSE stream
     """
@@ -156,7 +156,7 @@ async def query_stream(request: QueryRequest):
         f"Streaming query from user {request.user_id}: "
         f"{request.query[:50]}..."
     )
-    
+
     if not request.room_ids:
         # Return error as SSE event
         async def error_stream():
@@ -165,7 +165,42 @@ async def query_stream(request: QueryRequest):
                 "data": json.dumps({"error": "At least one room_id is required"})
             }
         return EventSourceResponse(error_stream())
-    
+
+    # Process attachment before streaming (same as non-streaming endpoint)
+    settings = get_settings()
+    attachment_result = None
+
+    if request.attachment_s3_url and request.attachment_type:
+        logger.info(
+            f"[ATTACHMENT] Stream: Processing attachment - "
+            f"type={request.attachment_type}, "
+            f"size={request.attachment_file_size or 0} bytes, "
+            f"S3={request.attachment_s3_url[:50]}..."
+        )
+
+        file_size = request.attachment_file_size or 0
+
+        attachment_result = await document_processor.process_attachment(
+            s3_url=request.attachment_s3_url,
+            attachment_type=request.attachment_type,
+            file_size=file_size,
+            text_threshold=settings.attachment_text_size_threshold,
+            file_size_threshold=settings.attachment_file_size_threshold
+        )
+
+        if not attachment_result['success']:
+            async def attachment_error_stream():
+                yield {
+                    "event": "error",
+                    "data": json.dumps({"error": f"Failed to process attachment: {attachment_result['error']}"})
+                }
+            return EventSourceResponse(attachment_error_stream())
+
+        logger.info(
+            f"[ATTACHMENT] Stream: Attachment processed - flow={attachment_result['flow']}, "
+            f"char_count={attachment_result['char_count']}"
+        )
+
     async def event_generator() -> AsyncGenerator[dict, None]:
         try:
             async for event in retrieval_service.query_stream(
@@ -178,18 +213,19 @@ async def query_stream(request: QueryRequest):
                 conversation_summary=request.conversation_summary,
                 conversation_id=request.conversation_id,
                 attachment_context=request.attachment_context,
-                has_vector_attachment=request.has_vector_attachment
+                has_vector_attachment=request.has_vector_attachment,
+                attachment_result=attachment_result
             ):
                 yield {
                     "event": event.get("event", "message"),
                     "data": json.dumps(event.get("data", {}))
                 }
-                
+
         except Exception as e:
             logger.error(f"Streaming query failed: {str(e)}")
             yield {
                 "event": "error",
                 "data": json.dumps({"error": str(e)})
             }
-    
+
     return EventSourceResponse(event_generator())
