@@ -134,39 +134,43 @@ class RetrievalService:
             # Step 1: Generate query embedding
             query_embedding = await embedding_service.embed_query(query)
             
-            # Step 2: Search vector store (dual retrieval if attachment)
+            # Step 2: Search vector store.
+            # When a file is attached, scope the search to ONLY that file's
+            # chunks (identified by conversation_id in the payload). This
+            # mirrors how room-file queries work via context_file_id: the
+            # user said "here's a file, answer from it" — don't pollute the
+            # context with unrelated room content.
             if has_vector_attachment and conversation_id:
-                # Dual retrieval: merge results from room_ids and conversation_id
-                logger.info("Dual retrieval: Searching both room content and attachment vectors")
-                
-                # Search room content
-                room_results = await vector_store_service.search(
-                    query_embedding=query_embedding,
-                    room_ids=room_ids,
-                    file_id=context_file_id,
-                    top_k=k,
-                    min_score=min_score
+                logger.info(
+                    f"Attachment-scoped retrieval for conversation {conversation_id} "
+                    f"— searching only this file's chunks"
                 )
-                
-                # Search attachment vectors
-                attachment_results = await vector_store_service.search_by_conversation(
+
+                # Lenient threshold so vague questions like "what is this
+                # about" still pull chunks through.
+                search_results = await vector_store_service.search_by_conversation(
                     query_embedding=query_embedding,
                     conversation_id=conversation_id,
                     top_k=k,
-                    min_score=min_score
+                    min_score=0.1,
                 )
-                
-                # Merge and sort by relevance score
-                all_results = room_results + attachment_results
-                all_results.sort(key=lambda x: x['score'], reverse=True)
-                
-                # Take top K from merged results
-                search_results = all_results[:k]
-                
+
+                # Fallback: if even the lenient threshold returned nothing,
+                # return the highest-scoring chunks regardless. The LLM
+                # should always see SOME of the attached file.
+                if not search_results:
+                    logger.info(
+                        "No attachment chunks above 0.1 — retrying without threshold"
+                    )
+                    search_results = await vector_store_service.search_by_conversation(
+                        query_embedding=query_embedding,
+                        conversation_id=conversation_id,
+                        top_k=k,
+                        min_score=0.0,
+                    )
+
                 logger.info(
-                    f"Merged {len(room_results)} room chunks + "
-                    f"{len(attachment_results)} attachment chunks = "
-                    f"{len(search_results)} total"
+                    f"Retrieved {len(search_results)} chunks from attached file"
                 )
             else:
                 # Standard search (room_ids only)

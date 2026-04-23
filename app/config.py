@@ -18,6 +18,7 @@ class Settings(BaseSettings):
     # Qdrant Vector Database
     qdrant_url: str = Field(default="http://localhost:6333", alias="QDRANT_URL")
     qdrant_api_key: Optional[str] = Field(default=None, alias="QDRANT_API_KEY")
+    qdrant_timeout: int = Field(default=120, alias="QDRANT_TIMEOUT")
     collection_name: str = Field(default="study_materials", alias="COLLECTION_NAME")
     
     # Cohere Embeddings API

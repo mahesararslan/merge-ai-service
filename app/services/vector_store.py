@@ -8,7 +8,7 @@ from typing import List, Optional, Dict, Any
 from datetime import datetime
 import uuid
 
-from qdrant_client import QdrantClient
+from qdrant_client import QdrantClient, models as qmodels
 from qdrant_client.http import models
 from qdrant_client.http.models import (
     VectorParams,
@@ -35,14 +35,21 @@ class VectorStoreService:
     def __init__(self):
         settings = get_settings()
         
-        # Initialize Qdrant client
+        # Initialize Qdrant client. The default timeout (~5s) is too short
+        # for large upserts (e.g. a big PDF/DOCX produces 300+ points and the
+        # write easily exceeds 5s on Qdrant Cloud). 120s is safe headroom.
+        qdrant_timeout = getattr(settings, "qdrant_timeout", 120)
         if settings.qdrant_api_key:
             self.client = QdrantClient(
                 url=settings.qdrant_url,
                 api_key=settings.qdrant_api_key,
+                timeout=qdrant_timeout,
             )
         else:
-            self.client = QdrantClient(url=settings.qdrant_url)
+            self.client = QdrantClient(
+                url=settings.qdrant_url,
+                timeout=qdrant_timeout,
+            )
         
         self.collection_name = settings.collection_name
         self.dimension = settings.embedding_dimension
@@ -51,46 +58,54 @@ class VectorStoreService:
         self._ensure_collection()
     
     def _ensure_collection(self):
-        """Create collection if it doesn't exist."""
+        """Create collection if missing, and ensure all required payload
+        indexes exist. Qdrant requires a payload index on any field that
+        appears in a filter — without one, queries return 400. Previously
+        indexes were only created alongside the collection, so long-lived
+        collections (created before a field was added) were missing them.
+        """
         try:
             collections = self.client.get_collections().collections
             exists = any(c.name == self.collection_name for c in collections)
-            
+
             if not exists:
                 self.client.create_collection(
                     collection_name=self.collection_name,
                     vectors_config=VectorParams(
                         size=self.dimension,
-                        distance=Distance.COSINE
-                    )
+                        distance=Distance.COSINE,
+                    ),
                 )
-                
-                # Create payload indexes for fast filtering
-                self.client.create_payload_index(
-                    collection_name=self.collection_name,
-                    field_name="room_id",
-                    field_schema="keyword"
-                )
-                self.client.create_payload_index(
-                    collection_name=self.collection_name,
-                    field_name="file_id",
-                    field_schema="keyword"
-                )
-                self.client.create_payload_index(
-                    collection_name=self.collection_name,
-                    field_name="conversation_id",
-                    field_schema="keyword"
-                )
-                self.client.create_payload_index(
-                    collection_name=self.collection_name,
-                    field_name="is_temporary",
-                    field_schema="bool"
-                )
-                
                 logger.info(f"Created collection: {self.collection_name}")
             else:
                 logger.info(f"Collection exists: {self.collection_name}")
-                
+
+            # Ensure every required index exists. create_payload_index is
+            # (effectively) idempotent on Qdrant, but some server versions
+            # return an error when the index already exists — catch and
+            # ignore so we don't crash on restarts.
+            required_indexes = [
+                ("room_id", "keyword"),
+                ("file_id", "keyword"),
+                ("conversation_id", "keyword"),
+                ("is_temporary", "bool"),
+            ]
+            for field_name, field_schema in required_indexes:
+                try:
+                    self.client.create_payload_index(
+                        collection_name=self.collection_name,
+                        field_name=field_name,
+                        field_schema=field_schema,
+                    )
+                    logger.info(
+                        f"Ensured payload index: {field_name} ({field_schema})"
+                    )
+                except Exception as idx_err:
+                    # Typical when index already exists — safe to ignore.
+                    logger.debug(
+                        f"Payload index {field_name} not re-created: {idx_err}"
+                    )
+
         except Exception as e:
             logger.error(f"Failed to ensure collection: {str(e)}")
             raise
@@ -147,15 +162,21 @@ class VectorStoreService:
                     payload=payload
                 ))
             
-            # Batch upsert for efficiency
-            self.client.upsert(
-                collection_name=self.collection_name,
-                points=points,
-                wait=True
-            )
-            
-            logger.info(f"Stored {len(points)} vectors for file {file_id}")
-            return len(points)
+            # Batch upsert in chunks so a large document (hundreds of
+            # points, each with a 1k-dim vector) doesn't exceed Qdrant's
+            # write timeout in a single request.
+            batch_size = 64
+            total = len(points)
+            for start in range(0, total, batch_size):
+                batch = points[start:start + batch_size]
+                self.client.upsert(
+                    collection_name=self.collection_name,
+                    points=batch,
+                    wait=True,
+                )
+
+            logger.info(f"Stored {total} vectors for file {file_id}")
+            return total
             
         except Exception as e:
             logger.error(f"Failed to store chunks: {str(e)}")
@@ -201,15 +222,16 @@ class VectorStoreService:
             
             search_filter = Filter(must=must_conditions)
             
-            # Execute search
-            results = self.client.search(
+            # Execute search (qdrant-client >= 1.9 uses query_points)
+            response = self.client.query_points(
                 collection_name=self.collection_name,
-                query_vector=query_embedding,
+                query=query_embedding,
                 query_filter=search_filter,
                 limit=top_k,
                 score_threshold=min_score,
                 with_payload=True
             )
+            results = response.points
             
             # Format results
             formatted_results = []
@@ -361,7 +383,7 @@ class VectorStoreService:
         """
         try:
             point_structs = []
-            
+
             for point_data in points:
                 point_id = str(uuid.uuid4())
                 point_structs.append(PointStruct(
@@ -369,20 +391,31 @@ class VectorStoreService:
                     vector=point_data['vector'],
                     payload=point_data['payload']
                 ))
-            
-            # Batch upsert
-            self.client.upsert(
-                collection_name=self.collection_name,
-                points=point_structs,
-                wait=True
-            )
-            
+
+            # Chunk the upsert so no single HTTP request is enormous. A
+            # single 391-point call was hitting Qdrant's write timeout on
+            # larger documents; 64-point batches stay well under any
+            # reasonable server-side limit and let us stream progress logs.
+            batch_size = 64
+            total = len(point_structs)
+            for start in range(0, total, batch_size):
+                batch = point_structs[start:start + batch_size]
+                self.client.upsert(
+                    collection_name=self.collection_name,
+                    points=batch,
+                    wait=True,
+                )
+                logger.info(
+                    f"  [upsert] {min(start + batch_size, total)}/{total} "
+                    f"points for conversation {conversation_id}"
+                )
+
             logger.info(
-                f"Stored {len(point_structs)} temp attachment vectors "
+                f"Stored {total} temp attachment vectors "
                 f"for conversation {conversation_id}"
             )
-            return len(point_structs)
-            
+            return total
+
         except Exception as e:
             logger.error(f"Failed to store temp attachment chunks: {str(e)}")
             raise
@@ -420,14 +453,15 @@ class VectorStoreService:
                 ]
             )
             
-            results = self.client.search(
+            response = self.client.query_points(
                 collection_name=self.collection_name,
-                query_vector=query_embedding,
+                query=query_embedding,
                 query_filter=search_filter,
                 limit=top_k,
                 score_threshold=min_score,
                 with_payload=True
             )
+            results = response.points
             
             formatted_results = []
             for result in results:
