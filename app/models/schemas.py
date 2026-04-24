@@ -124,6 +124,10 @@ class QueryRequest(BaseModel):
         None,
         description="File size in bytes (for flow decision)"
     )
+    attachment_original_name: Optional[str] = Field(
+        None,
+        description="Original filename — used to label the file in the prompt when multiple attachments are present"
+    )
     attachment_context: Optional[str] = Field(
         None, 
         description="Extracted text/base64 content for Flow 1 (small files)"

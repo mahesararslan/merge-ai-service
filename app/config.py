@@ -45,8 +45,15 @@ class Settings(BaseSettings):
     max_file_size_mb: int = Field(default=10, alias="MAX_FILE_SIZE_MB")
     
     # File Attachment Configuration (for AI conversation attachments)
-    attachment_text_size_threshold: int = Field(default=80000, alias="ATTACHMENT_TEXT_SIZE_THRESHOLD")
-    attachment_file_size_threshold: int = Field(default=8388608, alias="ATTACHMENT_FILE_SIZE_THRESHOLD")
+    # Flow decision thresholds. If extracted text and file size are under
+    # BOTH, the attachment is injected as full text into the LLM prompt
+    # (Flow 1) — this gives excellent quality on whole-document questions
+    # like summarization. Only if a doc is extremely large do we fall back
+    # to chunk-and-RAG (Flow 2), which is more targeted but struggles
+    # with holistic questions. Gemini 1.5 Pro handles 1M+ tokens, so we
+    # can be generous with Flow 1.
+    attachment_text_size_threshold: int = Field(default=1000000, alias="ATTACHMENT_TEXT_SIZE_THRESHOLD")
+    attachment_file_size_threshold: int = Field(default=104857600, alias="ATTACHMENT_FILE_SIZE_THRESHOLD")
     max_document_size: int = Field(default=15728640, alias="MAX_DOCUMENT_SIZE")
     max_text_size: int = Field(default=5242880, alias="MAX_TEXT_SIZE")
     max_image_size: int = Field(default=5242880, alias="MAX_IMAGE_SIZE")

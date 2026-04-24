@@ -186,18 +186,33 @@ class RetrievalService:
             # Always generate answer - with course materials, attachment, or general knowledge
             
             # Determine attachment context to use (first message vs subsequent messages)
-            final_attachment_context = None
-            if attachment_result and attachment_result['flow'] == 'direct_injection':
-                # First message with Flow 1: Use freshly extracted content
-                final_attachment_context = attachment_result.get('extracted_content')
-                logger.info(
-                    f"[LLM] Using freshly extracted attachment content ({len(final_attachment_context or '')} chars) + {len(search_results)} chunks"
+            # See the stream variant below for the rationale — identical
+            # three-state logic here.
+            fresh_name = request.attachment_original_name or "most recently attached file"
+            fresh_text: Optional[str] = None
+            if attachment_result and attachment_result.get('flow') == 'direct_injection':
+                fresh_text = attachment_result.get('extracted_content') or None
+            has_fresh = bool(fresh_text)
+            has_stored = bool(attachment_context)
+
+            if has_fresh and has_stored:
+                final_attachment_context = (
+                    f"[MOST RECENTLY ATTACHED FILE — if the user says \"this file\" they mean this one]\n"
+                    f"## File: {fresh_name}\n\n{fresh_text}"
+                    f"\n\n---\n\n"
+                    f"[PREVIOUSLY ATTACHED FILES IN THIS CONVERSATION — only refer to these if the user's question is explicitly about them]\n"
+                    f"{attachment_context}"
                 )
-            elif attachment_context:
-                # Subsequent message: Use stored context from conversation
+            elif has_fresh:
+                final_attachment_context = f"## File: {fresh_name}\n\n{fresh_text}"
+            elif has_stored:
                 final_attachment_context = attachment_context
+            else:
+                final_attachment_context = None
+
+            if final_attachment_context:
                 logger.info(
-                    f"[LLM] Using stored attachment_context ({len(final_attachment_context)} chars) + {len(search_results)} chunks"
+                    f"[LLM] Using combined attachment context ({len(final_attachment_context)} chars) + {len(search_results)} chunks"
                 )
             elif not search_results:
                 logger.info(f"[LLM] No relevant chunks or attachment found - using general LLM knowledge")
@@ -347,33 +362,42 @@ class RetrievalService:
             # Step 1: Generate query embedding
             query_embedding = await embedding_service.embed_query(query)
 
-            # Step 2: Search vector store (dual retrieval if attachment in vector DB)
+            # Step 2: Search vector store.
+            # When a file is attached, scope the search to ONLY that file's
+            # chunks (identified by conversation_id in the payload). This
+            # mirrors how room-file queries work via context_file_id: the
+            # user said "here's a file, answer from it" — don't pollute the
+            # context with unrelated room content.
             if has_vector_attachment and conversation_id:
-                logger.info("Stream: Dual retrieval - searching both room content and attachment vectors")
-
-                room_results = await vector_store_service.search(
-                    query_embedding=query_embedding,
-                    room_ids=room_ids,
-                    file_id=context_file_id,
-                    top_k=k,
-                    min_score=min_score
+                logger.info(
+                    f"Stream: Attachment-scoped retrieval for conversation "
+                    f"{conversation_id} — searching only this file's chunks"
                 )
 
-                attachment_results = await vector_store_service.search_by_conversation(
+                # Lenient threshold so vague questions like "what is this
+                # about" still pull chunks through.
+                search_results = await vector_store_service.search_by_conversation(
                     query_embedding=query_embedding,
                     conversation_id=conversation_id,
                     top_k=k,
-                    min_score=min_score
+                    min_score=0.1,
                 )
 
-                all_results = room_results + attachment_results
-                all_results.sort(key=lambda x: x['score'], reverse=True)
-                search_results = all_results[:k]
+                # Fallback: if even the lenient threshold returned nothing,
+                # take the highest-scoring chunks regardless of threshold.
+                if not search_results:
+                    logger.info(
+                        "Stream: No attachment chunks above 0.1 — retrying without threshold"
+                    )
+                    search_results = await vector_store_service.search_by_conversation(
+                        query_embedding=query_embedding,
+                        conversation_id=conversation_id,
+                        top_k=k,
+                        min_score=0.0,
+                    )
 
                 logger.info(
-                    f"Stream: Merged {len(room_results)} room chunks + "
-                    f"{len(attachment_results)} attachment chunks = "
-                    f"{len(search_results)} total"
+                    f"Stream: Retrieved {len(search_results)} chunks from attached file"
                 )
             else:
                 search_results = await vector_store_service.search(
@@ -408,18 +432,49 @@ class RetrievalService:
                 "data": {"status": "generating", "message": "Generating answer..."}
             }
 
-            # Determine attachment context for LLM (first message vs subsequent)
-            final_attachment_context = None
-            if attachment_result and attachment_result['flow'] == 'direct_injection':
-                final_attachment_context = attachment_result.get('extracted_content')
-                logger.info(
-                    f"[LLM] Stream: Using freshly extracted attachment content ({len(final_attachment_context or '')} chars)"
+            # Build the attachment block for the prompt.
+            #
+            # There are three possible states for any query:
+            #   A) Only a newly attached file (single-file first message).
+            #   B) Only stored context (follow-up on an existing conversation).
+            #   C) Both (user just attached a second file to an ongoing chat).
+            #
+            # For state C the newly attached file goes FIRST and is tagged
+            # as "most recently attached" — when the user says "this file",
+            # they mean the one they just attached, and Gemini needs a
+            # strong signal to prefer it over the older/larger prior file.
+            # In A and B there is no ambiguity so we drop the scaffolding.
+            fresh_name = request.attachment_original_name or "most recently attached file"
+            fresh_text: Optional[str] = None
+            if attachment_result and attachment_result.get('flow') == 'direct_injection':
+                fresh_text = attachment_result.get('extracted_content') or None
+
+            has_fresh = bool(fresh_text)
+            has_stored = bool(attachment_context)
+
+            if has_fresh and has_stored:
+                final_attachment_context = (
+                    f"[MOST RECENTLY ATTACHED FILE — if the user says \"this file\" they mean this one]\n"
+                    f"## File: {fresh_name}\n\n{fresh_text}"
+                    f"\n\n---\n\n"
+                    f"[PREVIOUSLY ATTACHED FILES IN THIS CONVERSATION — only refer to these if the user's question is explicitly about them]\n"
+                    f"{attachment_context}"
                 )
-            elif attachment_context:
+                logger.info(
+                    f"[LLM] Stream: Multi-file prompt — fresh '{fresh_name}' ({len(fresh_text or '')} chars) + stored ({len(attachment_context)} chars)"
+                )
+            elif has_fresh:
+                final_attachment_context = f"## File: {fresh_name}\n\n{fresh_text}"
+                logger.info(
+                    f"[LLM] Stream: Single-file prompt — '{fresh_name}' ({len(fresh_text or '')} chars)"
+                )
+            elif has_stored:
                 final_attachment_context = attachment_context
                 logger.info(
-                    f"[LLM] Stream: Using stored attachment_context ({len(final_attachment_context)} chars)"
+                    f"[LLM] Stream: Stored context only ({len(attachment_context)} chars)"
                 )
+            else:
+                final_attachment_context = None
 
             # Step 3: Stream the answer with conversation context and attachment
             full_answer = ""
