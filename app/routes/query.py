@@ -97,7 +97,8 @@ async def query(request: QueryRequest):
             conversation_id=request.conversation_id,
             attachment_context=request.attachment_context,
             has_vector_attachment=request.has_vector_attachment,
-            attachment_result=attachment_result
+            attachment_result=attachment_result,
+            attachment_original_name=request.attachment_original_name
         )
         
         # Add attachment processing info to response
@@ -214,7 +215,8 @@ async def query_stream(request: QueryRequest):
                 conversation_id=request.conversation_id,
                 attachment_context=request.attachment_context,
                 has_vector_attachment=request.has_vector_attachment,
-                attachment_result=attachment_result
+                attachment_result=attachment_result,
+                attachment_original_name=request.attachment_original_name
             ):
                 yield {
                     "event": event.get("event", "message"),

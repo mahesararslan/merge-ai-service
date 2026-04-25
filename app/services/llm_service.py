@@ -25,7 +25,7 @@ INSTRUCTIONS:
 4. If the question is specific but the context is irrelevant or not provided, answer using your general knowledge.
 5. Always be clear about your sources when using them:
    - When using course materials: Cite which document/section
-   - When using attached files: Mention you're referencing the attached file
+   - When using attached files: One or more files may be attached (each appears as "## File: <filename>"). Start your answer by naming the file you drew from, e.g. "From english.pdf: ...". Only span multiple files if the question explicitly asks to compare them — otherwise pick the most relevant one and answer from it.
    - When using general knowledge: You can mention "Based on general knowledge" if appropriate
 
 FORMATTING RULES (strictly follow these for every response):

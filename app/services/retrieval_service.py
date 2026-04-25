@@ -42,7 +42,8 @@ class RetrievalService:
         conversation_id: Optional[str] = None,
         attachment_context: Optional[str] = None,
         has_vector_attachment: Optional[bool] = False,
-        attachment_result: Optional[Dict[str, Any]] = None
+        attachment_result: Optional[Dict[str, Any]] = None,
+        attachment_original_name: Optional[str] = None
     ) -> QueryResponse:
         """
         Execute a RAG query and return a complete response.
@@ -188,7 +189,7 @@ class RetrievalService:
             # Determine attachment context to use (first message vs subsequent messages)
             # See the stream variant below for the rationale — identical
             # three-state logic here.
-            fresh_name = request.attachment_original_name or "most recently attached file"
+            fresh_name = attachment_original_name or "most recently attached file"
             fresh_text: Optional[str] = None
             if attachment_result and attachment_result.get('flow') == 'direct_injection':
                 fresh_text = attachment_result.get('extracted_content') or None
@@ -280,7 +281,8 @@ class RetrievalService:
         conversation_id: Optional[str] = None,
         attachment_context: Optional[str] = None,
         has_vector_attachment: Optional[bool] = False,
-        attachment_result: Optional[Dict[str, Any]] = None
+        attachment_result: Optional[Dict[str, Any]] = None,
+        attachment_original_name: Optional[str] = None
     ) -> AsyncGenerator[Dict[str, Any], None]:
         """
         Execute a RAG query with streaming response.
@@ -444,7 +446,7 @@ class RetrievalService:
             # they mean the one they just attached, and Gemini needs a
             # strong signal to prefer it over the older/larger prior file.
             # In A and B there is no ambiguity so we drop the scaffolding.
-            fresh_name = request.attachment_original_name or "most recently attached file"
+            fresh_name = attachment_original_name or "most recently attached file"
             fresh_text: Optional[str] = None
             if attachment_result and attachment_result.get('flow') == 'direct_injection':
                 fresh_text = attachment_result.get('extracted_content') or None
