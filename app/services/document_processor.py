@@ -144,7 +144,13 @@ class DocumentProcessor:
     def _extract_docx(self, content: bytes) -> str:
         """Extract text from DOCX preserving structure."""
         text_parts = []
-        doc = DocxDocument(BytesIO(content))
+        try:
+            doc = DocxDocument(BytesIO(content))
+        except Exception as e:
+            if "not a zip file" in str(e).lower() or "zipfile" in str(e).lower():
+                logger.warning("DOCX extraction failed (not a zip file) — trying PDF fallback")
+                return self._extract_pdf(content)
+            raise
         
         for para in doc.paragraphs:
             text = para.text.strip()
