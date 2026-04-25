@@ -9,9 +9,11 @@ import base64
 from typing import Tuple, Optional, Dict, Any
 from io import BytesIO
 
+import csv
 import fitz  # PyMuPDF
 from docx import Document as DocxDocument
 from pptx import Presentation
+import openpyxl
 import chardet
 import httpx
 
@@ -31,7 +33,9 @@ class DocumentProcessor:
             DocumentType.PDF: self._extract_pdf,
             DocumentType.DOCX: self._extract_docx,
             DocumentType.PPTX: self._extract_pptx,
+            DocumentType.XLSX: self._extract_xlsx,
             DocumentType.TXT: self._extract_txt,
+            DocumentType.CSV: self._extract_csv,
         }
     
     async def download_from_s3(self, s3_url: str) -> Tuple[bytes, Optional[str]]:
@@ -220,15 +224,33 @@ class DocumentProcessor:
     
     def _extract_txt(self, content: bytes) -> str:
         """Extract text from plain text file with encoding detection."""
-        # Detect encoding
         detected = chardet.detect(content)
         encoding = detected.get('encoding', 'utf-8') or 'utf-8'
-        
         try:
             return content.decode(encoding)
         except UnicodeDecodeError:
-            # Fallback to utf-8 with error handling
             return content.decode('utf-8', errors='replace')
+
+    def _extract_xlsx(self, content: bytes) -> str:
+        """Extract text from Excel workbook (.xlsx)."""
+        text_parts = []
+        wb = openpyxl.load_workbook(BytesIO(content), read_only=True, data_only=True)
+        for sheet in wb.worksheets:
+            text_parts.append(f"\n[Sheet: {sheet.title}]\n")
+            for row in sheet.iter_rows(values_only=True):
+                cells = [str(cell) for cell in row if cell is not None and str(cell).strip()]
+                if cells:
+                    text_parts.append(" | ".join(cells))
+        wb.close()
+        return "\n".join(text_parts)
+
+    def _extract_csv(self, content: bytes) -> str:
+        """Extract text from CSV file."""
+        detected = chardet.detect(content)
+        encoding = detected.get('encoding', 'utf-8') or 'utf-8'
+        text = content.decode(encoding, errors='replace')
+        reader = csv.reader(text.splitlines())
+        return "\n".join(" | ".join(row) for row in reader if any(cell.strip() for cell in row))
     
     def _clean_text(self, text: str) -> str:
         """
