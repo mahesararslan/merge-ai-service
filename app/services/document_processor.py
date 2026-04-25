@@ -179,9 +179,17 @@ class DocumentProcessor:
         return "\n".join(rows)
     
     def _extract_pptx(self, content: bytes) -> str:
-        """Extract text from PowerPoint presentation."""
+        """Extract text from PowerPoint presentation (.pptx only)."""
         text_parts = []
-        prs = Presentation(BytesIO(content))
+        try:
+            prs = Presentation(BytesIO(content))
+        except Exception as e:
+            if "not a zip file" in str(e).lower() or "zipfile" in str(e).lower():
+                raise ValueError(
+                    "Old PowerPoint (.ppt) format is not supported. "
+                    "Please open the file in PowerPoint or LibreOffice and save it as .pptx, then re-upload."
+                )
+            raise
         
         for slide_num, slide in enumerate(prs.slides, 1):
             slide_text = []
