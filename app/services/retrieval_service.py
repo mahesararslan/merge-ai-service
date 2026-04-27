@@ -420,8 +420,10 @@ class RetrievalService:
                     "event": "sources",
                     "data": {"sources": sources, "count": len(sources)}
                 }
-            else:
-                logger.info(f"No relevant chunks found - using general LLM knowledge")
+            # Note: when has_attachment is True we already logged "Attachment-only
+            # mode" above. When it's False AND search_results is empty, the
+            # earlier branch already logged the room-search fallback. So we
+            # don't need to log here.
 
             yield {
                 "event": "status",

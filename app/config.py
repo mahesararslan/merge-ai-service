@@ -27,8 +27,12 @@ class Settings(BaseSettings):
     embedding_dimension: int = Field(default=1024, alias="EMBEDDING_DIMENSION")
     
     # Google Gemini LLM
+    # gemini-1.5-flash is ~2-3x faster than 1.5-pro on long-input prompts
+    # (e.g. analysing a multi-page attached document) with quality close
+    # enough for most study-assistant tasks. Override via GEMINI_MODEL env
+    # to force Pro for a specific deployment.
     gemini_api_key: str = Field(alias="GEMINI_API_KEY")
-    gemini_model: str = Field(default="gemini-1.5-pro", alias="GEMINI_MODEL")
+    gemini_model: str = Field(default="gemini-1.5-flash", alias="GEMINI_MODEL")
     
     # Backend API Server (NestJS)
     api_server_url: str = Field(default="https://api.mergeedu.app", alias="API_SERVER_URL")
