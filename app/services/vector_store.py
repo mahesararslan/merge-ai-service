@@ -300,6 +300,63 @@ class VectorStoreService:
             logger.error(f"Failed to delete file vectors: {str(e)}")
             raise
     
+    async def get_all_chunks_by_file(
+        self,
+        file_id: str,
+    ) -> List[Dict[str, Any]]:
+        """
+        Fetch ALL chunks for a single file_id, ordered by chunk_index.
+
+        Used when a room file is "attached" to an AI conversation: instead
+        of relevance-ranking with an embedding query, we want the full
+        document text so the LLM can answer broad questions like
+        "summarize this file". Embedding search would only return top-K
+        chunks, missing sections the user actually wants.
+
+        Returns a list of dicts with content + chunk_index, sorted asc.
+        """
+        try:
+            search_filter = Filter(
+                must=[
+                    FieldCondition(
+                        key="file_id",
+                        match=MatchValue(value=file_id),
+                    )
+                ]
+            )
+
+            collected: List[Dict[str, Any]] = []
+            next_offset = None
+            page_size = 256
+            while True:
+                points, next_offset = self.client.scroll(
+                    collection_name=self.collection_name,
+                    scroll_filter=search_filter,
+                    limit=page_size,
+                    offset=next_offset,
+                    with_payload=True,
+                    with_vectors=False,
+                )
+                for point in points:
+                    payload = point.payload or {}
+                    collected.append({
+                        "chunk_index": payload.get("chunk_index", 0),
+                        "content": payload.get("content", ""),
+                        "section_title": payload.get("section_title"),
+                    })
+                if not next_offset:
+                    break
+
+            collected.sort(key=lambda c: c.get("chunk_index", 0))
+            logger.info(
+                f"Fetched {len(collected)} chunks for file {file_id}"
+            )
+            return collected
+
+        except Exception as e:
+            logger.error(f"Failed to fetch chunks for file {file_id}: {e}")
+            raise
+
     async def delete_room(self, room_id: str) -> int:
         """
         Delete all vectors associated with a room.

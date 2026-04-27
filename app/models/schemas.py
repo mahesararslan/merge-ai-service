@@ -98,6 +98,17 @@ class ConversationMessage(BaseModel):
     content: str = Field(..., description="Message content")
 
 
+class StoredAttachment(BaseModel):
+    """A previously-extracted Flow 1 attachment carried across messages.
+
+    The list of these on QueryRequest is ordered LATEST-FIRST so the
+    retrieval service can tag the most-recent file as 'this file' when
+    the user asks a generic follow-up.
+    """
+    name: str = Field(..., description="Original filename of the attachment")
+    content: str = Field(..., description="Extracted text content of the file")
+
+
 class QueryRequest(BaseModel):
     """Request model for RAG query."""
     query: str = Field(..., min_length=1, max_length=2000, description="User's question")
@@ -130,12 +141,14 @@ class QueryRequest(BaseModel):
         None,
         description="Original filename — used to label the file in the prompt when multiple attachments are present"
     )
-    attachment_context: Optional[str] = Field(
-        None, 
-        description="Extracted text/base64 content for Flow 1 (small files)"
+    stored_attachments: Optional[List[StoredAttachment]] = Field(
+        None,
+        description="Previously-extracted Flow 1 attachments in this conversation, "
+                    "ordered LATEST-FIRST. The first entry is treated as the referent "
+                    "for generic phrases like 'this file' on follow-up turns."
     )
     has_vector_attachment: Optional[bool] = Field(
-        False, 
+        False,
         description="Indicates attachment was stored in vector DB (Flow 2)"
     )
     conversation_id: Optional[str] = Field(

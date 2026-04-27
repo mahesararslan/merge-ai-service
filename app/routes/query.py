@@ -95,7 +95,7 @@ async def query(request: QueryRequest):
             conversation_history=[msg.dict() for msg in request.conversation_history] if request.conversation_history else None,
             conversation_summary=request.conversation_summary,
             conversation_id=request.conversation_id,
-            attachment_context=request.attachment_context,
+            stored_attachments=request.stored_attachments,
             has_vector_attachment=request.has_vector_attachment,
             attachment_result=attachment_result,
             attachment_original_name=request.attachment_original_name
@@ -213,7 +213,7 @@ async def query_stream(request: QueryRequest):
                 conversation_history=[msg.dict() for msg in request.conversation_history] if request.conversation_history else None,
                 conversation_summary=request.conversation_summary,
                 conversation_id=request.conversation_id,
-                attachment_context=request.attachment_context,
+                stored_attachments=request.stored_attachments,
                 has_vector_attachment=request.has_vector_attachment,
                 attachment_result=attachment_result,
                 attachment_original_name=request.attachment_original_name

@@ -20,6 +20,56 @@ class DeleteConversationVectorsResponse(BaseModel):
     vectors_deleted: int
 
 
+class FileChunksResponse(BaseModel):
+    """Response model for fetching all chunks of a file."""
+    file_id: str
+    chunk_count: int
+    char_count: int
+    content: str  # Concatenated text of all chunks, ordered by chunk_index
+
+
+@router.get(
+    "/file/{file_id}/all-chunks",
+    response_model=FileChunksResponse,
+    responses={
+        404: {"description": "No chunks found for file"},
+        500: {"description": "Fetch failed"},
+    },
+)
+async def get_file_all_chunks(file_id: str):
+    """
+    Fetch and concatenate all chunks of a single file_id.
+
+    Used when a room file is "attached" to an AI conversation. The caller
+    (NestJS) takes the returned `content` and stores it as a Flow 1
+    attachment context on the conversation, the same shape used for
+    personal-file attachments. Chunks are ordered by chunk_index.
+    """
+    logger.info(f"Fetching all chunks for file {file_id}")
+    try:
+        chunks = await vector_store_service.get_all_chunks_by_file(file_id)
+    except Exception as e:
+        logger.error(f"Failed to fetch chunks for {file_id}: {e}", exc_info=True)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to fetch chunks: {e}",
+        )
+
+    if not chunks:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"No chunks found for file {file_id}",
+        )
+
+    content = "\n\n".join(c["content"] for c in chunks if c.get("content"))
+    return FileChunksResponse(
+        file_id=file_id,
+        chunk_count=len(chunks),
+        char_count=len(content),
+        content=content,
+    )
+
+
 @router.delete(
     "/conversation/{conversation_id}",
     response_model=DeleteConversationVectorsResponse,

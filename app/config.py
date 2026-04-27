@@ -43,7 +43,7 @@ class Settings(BaseSettings):
     
     # Retrieval Configuration
     top_k_results: int = Field(default=5, alias="TOP_K_RESULTS")
-    min_relevance_score: float = Field(default=0.3, alias="MIN_RELEVANCE_SCORE")
+    min_relevance_score: float = Field(default=0.55, alias="MIN_RELEVANCE_SCORE")
     
     # File Processing
     max_file_size_mb: int = Field(default=10, alias="MAX_FILE_SIZE_MB")
