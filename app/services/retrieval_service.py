@@ -132,49 +132,53 @@ class RetrievalService:
                         f"in vector DB for conversation {conversation_id}, TTL: {ttl_expires_at.isoformat()}"
                     )
             
-            # Step 1: Generate query embedding
-            query_embedding = await embedding_service.embed_query(query)
-            
-            # Step 2: Search vector store.
-            # When a file is attached, scope the search to ONLY that file's
-            # chunks (identified by conversation_id in the payload). This
-            # mirrors how room-file queries work via context_file_id: the
-            # user said "here's a file, answer from it" — don't pollute the
-            # context with unrelated room content.
-            if has_vector_attachment and conversation_id:
-                logger.info(
-                    f"Attachment-scoped retrieval for conversation {conversation_id} "
-                    f"— searching only this file's chunks"
-                )
+            # ─── Strict priority: attachment > rooms > general knowledge ───
+            #
+            # The user has explicitly asked us NOT to mix sources. So:
+            #   1) If anything is attached (fresh injection, stored Flow 1
+            #      context, or Flow 2 vector chunks), answer ONLY from the
+            #      attachment. Do not search room materials at all.
+            #   2) Else, search the user's rooms in Qdrant.
+            #   3) Else, fall through to general LLM knowledge.
+            fresh_name = attachment_original_name or "most recently attached file"
+            fresh_text: Optional[str] = None
+            if attachment_result and attachment_result.get('flow') == 'direct_injection':
+                fresh_text = attachment_result.get('extracted_content') or None
+            has_fresh = bool(fresh_text)
+            has_stored = bool(attachment_context)
+            has_attachment = has_fresh or has_stored or bool(has_vector_attachment)
 
-                # Lenient threshold so vague questions like "what is this
-                # about" still pull chunks through.
-                search_results = await vector_store_service.search_by_conversation(
-                    query_embedding=query_embedding,
-                    conversation_id=conversation_id,
-                    top_k=k,
-                    min_score=0.1,
-                )
+            search_results: List[Dict[str, Any]] = []
 
-                # Fallback: if even the lenient threshold returned nothing,
-                # return the highest-scoring chunks regardless. The LLM
-                # should always see SOME of the attached file.
-                if not search_results:
+            if has_attachment:
+                # Flow 2 still needs a vector search to pick relevant chunks
+                # from the attached file's vectors. Flow 1 already has the
+                # full extracted text in attachment_context — nothing to search.
+                if has_vector_attachment and conversation_id:
                     logger.info(
-                        "No attachment chunks above 0.1 — retrying without threshold"
+                        f"Attachment-only retrieval for conversation {conversation_id}"
                     )
+                    query_embedding = await embedding_service.embed_query(query)
                     search_results = await vector_store_service.search_by_conversation(
                         query_embedding=query_embedding,
                         conversation_id=conversation_id,
                         top_k=k,
-                        min_score=0.0,
+                        min_score=0.1,
                     )
-
-                logger.info(
-                    f"Retrieved {len(search_results)} chunks from attached file"
-                )
+                    if not search_results:
+                        logger.info("No attachment chunks above 0.1 — retrying without threshold")
+                        search_results = await vector_store_service.search_by_conversation(
+                            query_embedding=query_embedding,
+                            conversation_id=conversation_id,
+                            top_k=k,
+                            min_score=0.0,
+                        )
+                    logger.info(f"Retrieved {len(search_results)} chunks from attached file")
+                else:
+                    logger.info("[LLM] Attachment-only mode (Flow 1) — skipping room search")
             else:
-                # Standard search (room_ids only)
+                # No attachment → search the user's rooms
+                query_embedding = await embedding_service.embed_query(query)
                 search_results = await vector_store_service.search(
                     query_embedding=query_embedding,
                     room_ids=room_ids,
@@ -182,19 +186,8 @@ class RetrievalService:
                     top_k=k,
                     min_score=min_score
                 )
-            
-            # Step 3: Generate answer with LLM
-            # Always generate answer - with course materials, attachment, or general knowledge
-            
-            # Determine attachment context to use (first message vs subsequent messages)
-            # See the stream variant below for the rationale — identical
-            # three-state logic here.
-            fresh_name = attachment_original_name or "most recently attached file"
-            fresh_text: Optional[str] = None
-            if attachment_result and attachment_result.get('flow') == 'direct_injection':
-                fresh_text = attachment_result.get('extracted_content') or None
-            has_fresh = bool(fresh_text)
-            has_stored = bool(attachment_context)
+                if not search_results:
+                    logger.info("[LLM] No room chunks found — falling back to general knowledge")
 
             if has_fresh and has_stored:
                 final_attachment_context = (
@@ -361,47 +354,46 @@ class RetrievalService:
                     # Mark for dual retrieval below
                     has_vector_attachment = True
 
-            # Step 1: Generate query embedding
-            query_embedding = await embedding_service.embed_query(query)
+            # ─── Strict priority: attachment > rooms > general knowledge ───
+            # Mirrors the non-streaming path. Compute attachment state first,
+            # then either attachment-only retrieval or rooms-only retrieval.
+            fresh_text_check: Optional[str] = None
+            if attachment_result and attachment_result.get('flow') == 'direct_injection':
+                fresh_text_check = attachment_result.get('extracted_content') or None
+            has_attachment = (
+                bool(fresh_text_check)
+                or bool(attachment_context)
+                or bool(has_vector_attachment)
+            )
 
-            # Step 2: Search vector store.
-            # When a file is attached, scope the search to ONLY that file's
-            # chunks (identified by conversation_id in the payload). This
-            # mirrors how room-file queries work via context_file_id: the
-            # user said "here's a file, answer from it" — don't pollute the
-            # context with unrelated room content.
-            if has_vector_attachment and conversation_id:
-                logger.info(
-                    f"Stream: Attachment-scoped retrieval for conversation "
-                    f"{conversation_id} — searching only this file's chunks"
-                )
+            search_results: List[Dict[str, Any]] = []
 
-                # Lenient threshold so vague questions like "what is this
-                # about" still pull chunks through.
-                search_results = await vector_store_service.search_by_conversation(
-                    query_embedding=query_embedding,
-                    conversation_id=conversation_id,
-                    top_k=k,
-                    min_score=0.1,
-                )
-
-                # Fallback: if even the lenient threshold returned nothing,
-                # take the highest-scoring chunks regardless of threshold.
-                if not search_results:
+            if has_attachment:
+                if has_vector_attachment and conversation_id:
                     logger.info(
-                        "Stream: No attachment chunks above 0.1 — retrying without threshold"
+                        f"Stream: Attachment-only retrieval for conversation {conversation_id}"
                     )
+                    query_embedding = await embedding_service.embed_query(query)
                     search_results = await vector_store_service.search_by_conversation(
                         query_embedding=query_embedding,
                         conversation_id=conversation_id,
                         top_k=k,
-                        min_score=0.0,
+                        min_score=0.1,
                     )
-
-                logger.info(
-                    f"Stream: Retrieved {len(search_results)} chunks from attached file"
-                )
+                    if not search_results:
+                        logger.info("Stream: No attachment chunks above 0.1 — retrying without threshold")
+                        search_results = await vector_store_service.search_by_conversation(
+                            query_embedding=query_embedding,
+                            conversation_id=conversation_id,
+                            top_k=k,
+                            min_score=0.0,
+                        )
+                    logger.info(f"Stream: Retrieved {len(search_results)} chunks from attached file")
+                else:
+                    logger.info("[LLM] Stream: Attachment-only mode (Flow 1) — skipping room search")
             else:
+                # No attachment → search the user's rooms
+                query_embedding = await embedding_service.embed_query(query)
                 search_results = await vector_store_service.search(
                     query_embedding=query_embedding,
                     room_ids=room_ids,
@@ -409,6 +401,8 @@ class RetrievalService:
                     top_k=k,
                     min_score=min_score
                 )
+                if not search_results:
+                    logger.info("[LLM] Stream: No room chunks found — falling back to general knowledge")
 
             # Yield sources if found
             if search_results:
