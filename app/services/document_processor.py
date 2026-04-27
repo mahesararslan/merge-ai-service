@@ -252,6 +252,23 @@ class DocumentProcessor:
         reader = csv.reader(text.splitlines())
         return "\n".join(" | ".join(row) for row in reader if any(cell.strip() for cell in row))
     
+    def _detect_image_mime(self, content: bytes) -> str:
+        """Sniff the image MIME type from the first few bytes (magic numbers)."""
+        if len(content) < 12:
+            return "image/png"
+        if content.startswith(b"\x89PNG\r\n\x1a\n"):
+            return "image/png"
+        if content[:3] == b"\xff\xd8\xff":
+            return "image/jpeg"
+        if content[:6] in (b"GIF87a", b"GIF89a"):
+            return "image/gif"
+        if content[:4] == b"RIFF" and content[8:12] == b"WEBP":
+            return "image/webp"
+        if content[:2] == b"BM":
+            return "image/bmp"
+        # Fallback — Gemini accepts image/png most reliably for unknowns.
+        return "image/png"
+
     def _clean_text(self, text: str) -> str:
         """
         Clean extracted text by removing noise and normalizing whitespace.
@@ -337,12 +354,13 @@ class DocumentProcessor:
             # Process based on attachment type
             if attachment_type.upper() == "IMAGE":
                 logger.info(f"[ATTACHMENT] Processing as IMAGE - converting to base64")
-                # Convert image to base64
+                # Detect MIME type from binary signature so the data URI is
+                # parseable downstream (Gemini needs a real mime, not image/*).
+                mime = self._detect_image_mime(file_content)
                 extracted_content = base64.b64encode(file_content).decode('utf-8')
-                # Prefix with data URI scheme for images
-                extracted_content = f"data:image/*;base64,{extracted_content}"
+                extracted_content = f"data:{mime};base64,{extracted_content}"
                 char_count = len(extracted_content)
-                logger.info(f"[ATTACHMENT] ✓ Image converted: {char_count} chars (base64)")
+                logger.info(f"[ATTACHMENT] ✓ Image converted: {char_count} chars (base64), mime={mime}")
                 
             else:
                 logger.info(f"[ATTACHMENT] Processing as DOCUMENT - extracting text")

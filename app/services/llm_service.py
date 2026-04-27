@@ -3,14 +3,54 @@ LLM service using Google Gemini with function calling support.
 Handles RAG answer generation and study plan creation.
 """
 
+import base64
 import logging
 import json
-from typing import List, Dict, Any, Optional, AsyncGenerator
+import re
+from typing import List, Dict, Any, Optional, AsyncGenerator, Tuple
 
 import google.generativeai as genai
 from google.generativeai.types import HarmCategory, HarmBlockThreshold
 
 from app.config import get_settings
+
+
+# Matches an embedded image data-URI inside attachment_context strings.
+# Captures the MIME type and the base64 payload separately.
+_IMAGE_DATA_URI_RE = re.compile(
+    r"data:(image/[A-Za-z0-9.+-]+);base64,([A-Za-z0-9+/=\s]+?)(?=\s*(?:data:image/|\n##\s|\n---|\Z))",
+    re.DOTALL,
+)
+
+
+def _extract_images_from_context(
+    text: Optional[str],
+) -> Tuple[Optional[str], List[Dict[str, Any]]]:
+    """
+    Pull data:image/...;base64,... blobs out of a Flow 1 attachment_context
+    string and return (cleaned_text, [image_part, ...]) where each part is
+    a Gemini-compatible {mime_type, data} dict ready to pass to generate_content.
+
+    The cleaned text replaces each image with a short placeholder so the
+    model still sees which file the image belongs to.
+    """
+    if not text or "data:image/" not in text:
+        return text, []
+
+    images: List[Dict[str, Any]] = []
+
+    def _replace(match: re.Match) -> str:
+        mime = match.group(1).strip()
+        b64 = re.sub(r"\s+", "", match.group(2))
+        try:
+            data = base64.b64decode(b64)
+        except Exception:
+            return "[Image attached: could not decode]"
+        images.append({"mime_type": mime, "data": data})
+        return f"[Image attached — see image part #{len(images)}]"
+
+    cleaned = _IMAGE_DATA_URI_RE.sub(_replace, text)
+    return cleaned, images
 
 logger = logging.getLogger(__name__)
 
@@ -18,15 +58,34 @@ logger = logging.getLogger(__name__)
 # System prompts
 RAG_SYSTEM_PROMPT = """You are an AI study assistant helping students learn and understand concepts.
 
+SCOPE — STRICT (read this first, applies to every reply):
+You are restricted to **educational topics ONLY**. This includes:
+  - Academic subjects (math, science, history, languages, literature, computer science, engineering, business, arts theory, etc.)
+  - Help with homework, assignments, quizzes, exam prep, and study techniques
+  - Explaining concepts, definitions, formulas, code, diagrams, theorems
+  - Summarizing or analyzing the user's attached study materials
+  - Career/academic guidance directly tied to learning a subject
+
+You MUST refuse, politely but firmly, any question that is NOT educational.
+This includes (non-exhaustive): games, gaming tips/walkthroughs, movies, TV shows, dramas, music recommendations, sports predictions, celebrity gossip, food recipes/restaurant advice, dating, fashion, shopping suggestions, jokes for entertainment, personal life advice, politics, religion, news commentary, or any "what should I do for fun"-style request.
+
+When refusing, respond with exactly this style (one short paragraph, no headings, no formatting):
+> *"I can only help with educational topics — homework, concept explanations, study materials, exam prep, and so on. That question is outside what I'm built for. Feel free to ask me anything academic instead!"*
+
+Greetings ("hi", "hello", "thanks") are fine — respond briefly and warmly, then offer to help with a study question. Do NOT refuse those.
+
+If the user's question mixes educational and non-educational angles (e.g., "explain physics using Marvel movies"), engage with the educational part and skip the entertainment angle.
+
 INSTRUCTIONS:
 1. You will be provided with course materials or attached files as context. Evaluate if this context is actually relevant to the student's question.
 2. If the user's input is a general greeting (e.g., "hello", "hi"), a conversational message, or a vague request for help (e.g., "I need help"), IGNORE the context entirely and respond naturally as a helpful assistant.
 3. If the context IS relevant to the specific question, prioritize answering from those sources.
-4. If the question is specific but the context is irrelevant or not provided, answer using your general knowledge.
+4. If the question is specific but the context is irrelevant or not provided, answer using your general knowledge — but only if the question itself is educational.
 5. Always be clear about your sources when using them:
    - When using course materials: Cite which document/section
    - When using attached files: One or more files may be attached (each appears as "## File: <filename>"). Start your answer by naming the file you drew from, e.g. "From english.pdf: ...". Only span multiple files if the question explicitly asks to compare them — otherwise pick the most relevant one and answer from it.
    - When using general knowledge: You can mention "Based on general knowledge" if appropriate
+6. If an image is attached, describe or analyze it ONLY in an educational frame — read text/diagrams/equations from it, explain what it depicts academically. If the image is unrelated to study (a meme, a selfie, food, a movie poster, etc.), refuse politely using the SCOPE rule above.
 
 FORMATTING RULES (strictly follow these for every response):
 - **Always use Markdown formatting** in your responses.
@@ -164,17 +223,24 @@ class LLMService:
                 role = "Student" if msg['role'] == 'user' else "Assistant"
                 conversation_context += f"{role}: {msg['content']}\n"
         
+        # Pull any embedded image data URIs out of the attachment context so
+        # we can pass them as real multimodal parts to Gemini, rather than
+        # letting them sit in the text prompt as opaque base64.
+        cleaned_attachment_context, image_parts = _extract_images_from_context(
+            attachment_context
+        )
+
         # Build prompt with system instruction, conversation context, and course materials
         prompt = f"{RAG_SYSTEM_PROMPT}\n\n==="
-        
+
         # Add conversation context if available
         if conversation_context:
             prompt += f"{conversation_context}\n\n==="
-        
+
         # Add attachment context (Flow 1: direct injection)
-        if attachment_context:
-            prompt += f"""\n\nATTACHED FILE CONTENT:\n{attachment_context}\n\n==="""
-        
+        if cleaned_attachment_context:
+            prompt += f"""\n\nATTACHED FILE CONTENT:\n{cleaned_attachment_context}\n\n==="""
+
         # Add course materials context if available
         if context_text:
             prompt += f"""
@@ -183,7 +249,7 @@ CONTEXT FROM COURSE MATERIALS:
 {context_text}
 
 ==="""
-        
+
         prompt += f"""
 
 STUDENT QUESTION:
@@ -197,15 +263,19 @@ Please provide a helpful answer. If the context is irrelevant to the question (e
                 generation_config=self.generation_config,
                 safety_settings=self.safety_settings
             )
-            
-            response = model.generate_content(prompt)
-            
+
+            # Gemini accepts a list of parts: text first, then any images.
+            content_parts: List[Any] = [prompt, *image_parts]
+            if image_parts:
+                logger.info(f"[LLM] Sending {len(image_parts)} image(s) as multimodal parts to Gemini")
+            response = model.generate_content(content_parts)
+
             if response.text:
                 return response.text
             else:
                 logger.warning("Empty response from Gemini")
                 return "I apologize, but I couldn't generate a response. Please try rephrasing your question."
-                
+
         except Exception as e:
             logger.error(f"LLM generation failed: {str(e)}")
             raise
@@ -249,17 +319,22 @@ Please provide a helpful answer. If the context is irrelevant to the question (e
                 role = "Student" if msg['role'] == 'user' else "Assistant"
                 conversation_context += f"{role}: {msg['content']}\n"
         
+        # Same multimodal extraction as the non-streaming path.
+        cleaned_attachment_context, image_parts = _extract_images_from_context(
+            attachment_context
+        )
+
         # Build prompt with system instruction, conversation context, and course materials
         prompt = f"{RAG_SYSTEM_PROMPT}\n\n==="
-        
+
         # Add conversation context if available
         if conversation_context:
             prompt += f"{conversation_context}\n\n==="
-        
+
         # Add attachment context (Flow 1: direct injection)
-        if attachment_context:
-            prompt += f"""\n\nATTACHED FILE CONTENT:\n{attachment_context}\n\n==="""
-        
+        if cleaned_attachment_context:
+            prompt += f"""\n\nATTACHED FILE CONTENT:\n{cleaned_attachment_context}\n\n==="""
+
         # Add course materials context if available
         if context_text:
             prompt += f"""
@@ -268,7 +343,7 @@ CONTEXT FROM COURSE MATERIALS:
 {context_text}
 
 ==="""
-        
+
         prompt += f"""
 
 STUDENT QUESTION:
@@ -282,13 +357,16 @@ Please provide a helpful answer. If the context is irrelevant to the question (e
                 generation_config=self.generation_config,
                 safety_settings=self.safety_settings
             )
-            
-            response = model.generate_content(prompt, stream=True)
-            
+
+            content_parts: List[Any] = [prompt, *image_parts]
+            if image_parts:
+                logger.info(f"[LLM] Streaming with {len(image_parts)} image part(s)")
+            response = model.generate_content(content_parts, stream=True)
+
             for chunk in response:
                 if chunk.text:
                     yield chunk.text
-                    
+
         except Exception as e:
             logger.error(f"Streaming generation failed: {str(e)}")
             yield f"Error generating response: {str(e)}"
