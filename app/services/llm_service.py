@@ -176,11 +176,15 @@ class LLMService:
         }
         
         # Generation config
+        # max_output_tokens=8192 is Gemini 1.5 Pro's hard ceiling. Long
+        # document analyses (e.g. "summarise / suggest improvements" on
+        # a 100K-char attached file) routinely need >2K output tokens
+        # and were getting truncated mid-sentence at the old limit.
         self.generation_config = genai.GenerationConfig(
             temperature=0.7,
             top_p=0.9,
             top_k=40,
-            max_output_tokens=2048,
+            max_output_tokens=8192,
         )
     
     async def generate_answer(
